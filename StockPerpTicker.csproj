@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <ProjectName>StockPerpTicker</ProjectName>
+    <RootNamespace>StockPerpTicker</RootNamespace>
+    <AssemblyName>StockPerpTicker</AssemblyName>
+    <OutputType>WinExe</OutputType>
+    <PlatformTarget>x86</PlatformTarget>
+    <FrameworkDirectory>$(SystemRoot)\Microsoft.NET\Framework\v4.0.30319</FrameworkDirectory>
+    <OutputPath>$(MSBuildProjectDirectory)\bin\$(Configuration)</OutputPath>
+    <IntermediateOutputPath>$(MSBuildProjectDirectory)\obj\$(Configuration)</IntermediateOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src\Program.cs" />
+    <Compile Include="src\AppInfrastructure.cs" />
+    <Compile Include="src\MarketModels.cs" />
+    <Compile Include="src\JsonParser.cs" />
+    <Compile Include="src\OkxMarketClient.cs" />
+    <Compile Include="src\ChartControl.cs" />
+    <Compile Include="src\TaskbarTickerForm.cs" />
+    <Compile Include="src\MainForm.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="$(FrameworkDirectory)\mscorlib.dll" />
+    <Reference Include="$(FrameworkDirectory)\System.dll" />
+    <Reference Include="$(FrameworkDirectory)\System.Core.dll" />
+    <Reference Include="$(FrameworkDirectory)\System.Drawing.dll" />
+    <Reference Include="$(FrameworkDirectory)\System.Web.Extensions.dll" />
+    <Reference Include="$(FrameworkDirectory)\System.Windows.Forms.dll" />
+  </ItemGroup>
+
+  <UsingTask TaskName="Microsoft.Build.Tasks.Csc" AssemblyFile="$(FrameworkDirectory)\Microsoft.Build.Tasks.v4.0.dll" />
+
+  <Target Name="Build">
+    <MakeDir Directories="$(OutputPath);$(IntermediateOutputPath)" />
+    <Csc Sources="@(Compile)"
+         References="@(Reference)"
+         OutputAssembly="$(OutputPath)\$(AssemblyName).exe"
+         TargetType="winexe"
+         Platform="$(PlatformTarget)"
+         Optimize="true"
+         DebugType="pdbonly"
+         PdbFile="$(OutputPath)\$(AssemblyName).pdb"
+         DefineConstants="TRACE"
+         WarningLevel="4"
+         NoConfig="true"
+         NoStandardLib="true"
+         Win32Icon="$(MSBuildProjectDirectory)\assets\StockPerpTicker.ico"
+         Win32Manifest="$(MSBuildProjectDirectory)\app.manifest" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\config.json" DestinationFolder="$(OutputPath)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\app.config" DestinationFiles="$(OutputPath)\$(AssemblyName).exe.config" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\README.md" DestinationFolder="$(OutputPath)" />
+  </Target>
+
+  <Target Name="Clean">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\bin;$(MSBuildProjectDirectory)\obj" />
+  </Target>
+</Project>
