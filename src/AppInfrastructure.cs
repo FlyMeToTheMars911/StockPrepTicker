@@ -17,13 +17,18 @@ namespace StockPerpTicker
         public int[] movingAverages { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
         public string taskbarTickerPosition { get; set; }
+        public bool hasCustomTaskbarTickerPosition { get; set; }
+        public int taskbarTickerCustomLeft { get; set; }
+        public int taskbarTickerCustomTop { get; set; }
         internal TaskbarTickerPosition TickerPosition { get; set; }
     }
 
     internal enum TaskbarTickerPosition
     {
+        TopLeft,
         BottomLeft,
-        BottomRight
+        BottomRight,
+        Custom
     }
 
     internal static class SettingsStore
@@ -36,6 +41,8 @@ namespace StockPerpTicker
         internal const int MaximumRefreshIntervalMilliseconds = 60000;
         private const string BottomLeftTickerPosition = "bottomLeft";
         private const string BottomRightTickerPosition = "bottomRight";
+        private const string TopLeftTickerPosition = "topLeft";
+        private const string CustomTickerPosition = "custom";
         private static readonly int[] DefaultMovingAverages = { 5, 10, 20, 50 };
         private static readonly int[] SupportedMovingAverages = { 5, 10, 20, 50, 100, 200 };
 
@@ -112,6 +119,7 @@ namespace StockPerpTicker
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
+                hasCustomTaskbarTickerPosition = false,
                 TickerPosition = TaskbarTickerPosition.BottomRight
             };
         }
@@ -125,6 +133,9 @@ namespace StockPerpTicker
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = settings.taskbarTickerPosition,
+                hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,
+                taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
+                taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
                 TickerPosition = settings.TickerPosition
             };
         }
@@ -183,7 +194,12 @@ namespace StockPerpTicker
                 ? BottomRightTickerPosition
                 : settings.taskbarTickerPosition.Trim();
             TaskbarTickerPosition normalizedTickerPosition;
-            if (string.Equals(tickerPosition, BottomLeftTickerPosition, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(tickerPosition, TopLeftTickerPosition, StringComparison.OrdinalIgnoreCase))
+            {
+                tickerPosition = TopLeftTickerPosition;
+                normalizedTickerPosition = TaskbarTickerPosition.TopLeft;
+            }
+            else if (string.Equals(tickerPosition, BottomLeftTickerPosition, StringComparison.OrdinalIgnoreCase))
             {
                 tickerPosition = BottomLeftTickerPosition;
                 normalizedTickerPosition = TaskbarTickerPosition.BottomLeft;
@@ -192,6 +208,11 @@ namespace StockPerpTicker
             {
                 tickerPosition = BottomRightTickerPosition;
                 normalizedTickerPosition = TaskbarTickerPosition.BottomRight;
+            }
+            else if (string.Equals(tickerPosition, CustomTickerPosition, StringComparison.OrdinalIgnoreCase))
+            {
+                tickerPosition = CustomTickerPosition;
+                normalizedTickerPosition = TaskbarTickerPosition.Custom;
             }
             else
             {
@@ -206,6 +227,9 @@ namespace StockPerpTicker
                 movingAverages = normalizedMovingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = tickerPosition,
+                hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,
+                taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
+                taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
                 TickerPosition = normalizedTickerPosition
             };
             return true;

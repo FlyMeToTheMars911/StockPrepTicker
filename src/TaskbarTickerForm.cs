@@ -13,24 +13,44 @@ namespace StockPerpTicker
         private const int WindowHeight = 42;
         private const int ScreenEdgeGap = 6;
         private const int RoundedCornerRadius = 9;
+        private const float BorderThickness = 2f;
         private const int ToolWindowStyle = 0x00000080;
         private const int NoActivateStyle = 0x08000000;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
-        private static readonly Color BorderColor = Color.FromArgb(210, 214, 222);
+        private static readonly Color BorderColor = Color.FromArgb(120, 132, 150);
         private static readonly Color TickerBackground = Color.FromArgb(248, 250, 252);
         private readonly Action _restoreAction;
-        private readonly TaskbarTickerPosition _tickerPosition;
+        private readonly Action<Point> _customLocationChanged;
         private readonly Label _symbolLabel;
         private readonly Label _priceLabel;
         private readonly Label _changeLabel;
         private readonly SparklineControl _sparkline;
+        private TaskbarTickerPosition _tickerPosition;
+        private bool _hasCustomLocation;
+        private int _customLeft;
+        private int _customTop;
+        private bool _pointerDown;
+        private bool _dragMoved;
+        private Point _pointerDownScreenPosition;
+        private Point _dragStartLocation;
+        private Control _capturedControl;
 
-        internal TaskbarTickerForm(Action restoreAction, TaskbarTickerPosition tickerPosition)
+        internal TaskbarTickerForm(
+            Action restoreAction,
+            TaskbarTickerPosition tickerPosition,
+            bool hasCustomLocation,
+            int customLeft,
+            int customTop,
+            Action<Point> customLocationChanged)
         {
             _restoreAction = restoreAction;
             _tickerPosition = tickerPosition;
+            _hasCustomLocation = hasCustomLocation;
+            _customLeft = customLeft;
+            _customTop = customTop;
+            _customLocationChanged = customLocationChanged;
             Text = "StockPerpTicker 迷你行情";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -39,7 +59,8 @@ namespace StockPerpTicker
             Size = new Size(WindowWidth, WindowHeight);
             BackColor = TickerBackground;
             AutoScaleMode = AutoScaleMode.Dpi;
-            Padding = new Padding(1);
+            Padding = new Padding(2);
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
             _symbolLabel = new Label
             {
@@ -78,7 +99,7 @@ namespace StockPerpTicker
             Controls.Add(_priceLabel);
             Controls.Add(_changeLabel);
             Controls.Add(_sparkline);
-            AttachRestoreClick(this);
+            AttachPointerInteraction(this);
             Resize += delegate { UpdateRoundedRegion(); };
             UpdateRoundedRegion();
         }
@@ -125,12 +146,40 @@ namespace StockPerpTicker
         {
             Screen screen = Screen.FromRectangle(referenceBounds);
             Rectangle workingArea = screen.WorkingArea;
-            int left = _tickerPosition == TaskbarTickerPosition.BottomLeft
-                ? workingArea.Left + ScreenEdgeGap
-                : workingArea.Right - Width - ScreenEdgeGap;
-            Location = new Point(
-                left,
-                workingArea.Bottom - Height - ScreenEdgeGap);
+            Point desiredLocation;
+            switch (_tickerPosition)
+            {
+                case TaskbarTickerPosition.TopLeft:
+                    desiredLocation = new Point(
+                        workingArea.Left + ScreenEdgeGap,
+                        workingArea.Top + ScreenEdgeGap);
+                    break;
+                case TaskbarTickerPosition.BottomLeft:
+                    desiredLocation = new Point(
+                        workingArea.Left + ScreenEdgeGap,
+                        workingArea.Bottom - Height - ScreenEdgeGap);
+                    break;
+                case TaskbarTickerPosition.Custom:
+                    if (_hasCustomLocation)
+                    {
+                        desiredLocation = new Point(_customLeft, _customTop);
+                        workingArea = Screen.FromPoint(desiredLocation).WorkingArea;
+                    }
+                    else
+                    {
+                        desiredLocation = new Point(
+                            workingArea.Right - Width - ScreenEdgeGap,
+                            workingArea.Bottom - Height - ScreenEdgeGap);
+                    }
+                    break;
+                default:
+                    desiredLocation = new Point(
+                        workingArea.Right - Width - ScreenEdgeGap,
+                        workingArea.Bottom - Height - ScreenEdgeGap);
+                    break;
+            }
+
+            Location = ClampToWorkingArea(desiredLocation, workingArea);
             if (!Visible)
             {
                 Show();
@@ -151,26 +200,114 @@ namespace StockPerpTicker
         {
             base.OnPaint(args);
             args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (Pen borderPen = new Pen(BorderColor, 1f))
+            Rectangle borderBounds = new Rectangle(1, 1, Width - 3, Height - 3);
+            using (GraphicsPath borderPath = CreateRoundedRectanglePath(borderBounds, RoundedCornerRadius - 1))
+            using (Pen borderPen = new Pen(BorderColor, BorderThickness))
             {
-                args.Graphics.DrawRectangle(borderPen, 0, 0, Width - 1, Height - 1);
+                args.Graphics.DrawPath(borderPen, borderPath);
             }
         }
 
-        private void AttachRestoreClick(Control control)
+        private void AttachPointerInteraction(Control control)
         {
-            control.Cursor = Cursors.Hand;
-            control.Click += delegate
-            {
-                if (_restoreAction != null)
-                {
-                    _restoreAction();
-                }
-            };
+            control.Cursor = Cursors.SizeAll;
+            control.MouseDown += BeginPointerInteraction;
+            control.MouseMove += ContinuePointerInteraction;
+            control.MouseUp += EndPointerInteraction;
             foreach (Control child in control.Controls)
             {
-                AttachRestoreClick(child);
+                AttachPointerInteraction(child);
             }
+        }
+
+        private void BeginPointerInteraction(object sender, MouseEventArgs args)
+        {
+            if (args.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            _pointerDown = true;
+            _dragMoved = false;
+            _pointerDownScreenPosition = Cursor.Position;
+            _dragStartLocation = Location;
+            _capturedControl = sender as Control;
+            if (_capturedControl != null)
+            {
+                _capturedControl.Capture = true;
+            }
+        }
+
+        private void ContinuePointerInteraction(object sender, MouseEventArgs args)
+        {
+            if (!_pointerDown)
+            {
+                return;
+            }
+
+            Point cursorPosition = Cursor.Position;
+            int horizontalDelta = cursorPosition.X - _pointerDownScreenPosition.X;
+            int verticalDelta = cursorPosition.Y - _pointerDownScreenPosition.Y;
+            if (!_dragMoved)
+            {
+                Size dragSize = SystemInformation.DragSize;
+                _dragMoved = Math.Abs(horizontalDelta) >= Math.Max(2, dragSize.Width / 2)
+                    || Math.Abs(verticalDelta) >= Math.Max(2, dragSize.Height / 2);
+            }
+
+            if (!_dragMoved)
+            {
+                return;
+            }
+
+            Point desiredLocation = new Point(
+                _dragStartLocation.X + horizontalDelta,
+                _dragStartLocation.Y + verticalDelta);
+            Rectangle workingArea = Screen.FromPoint(cursorPosition).WorkingArea;
+            Location = ClampToWorkingArea(desiredLocation, workingArea);
+        }
+
+        private void EndPointerInteraction(object sender, MouseEventArgs args)
+        {
+            if (!_pointerDown || args.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            _pointerDown = false;
+            if (_capturedControl != null)
+            {
+                _capturedControl.Capture = false;
+                _capturedControl = null;
+            }
+
+            if (_dragMoved)
+            {
+                _tickerPosition = TaskbarTickerPosition.Custom;
+                _hasCustomLocation = true;
+                _customLeft = Left;
+                _customTop = Top;
+                if (_customLocationChanged != null)
+                {
+                    _customLocationChanged(Location);
+                }
+
+                return;
+            }
+
+            if (_restoreAction != null)
+            {
+                _restoreAction();
+            }
+        }
+
+        private Point ClampToWorkingArea(Point location, Rectangle workingArea)
+        {
+            int maximumLeft = Math.Max(workingArea.Left, workingArea.Right - Width);
+            int maximumTop = Math.Max(workingArea.Top, workingArea.Bottom - Height);
+            return new Point(
+                Math.Max(workingArea.Left, Math.Min(location.X, maximumLeft)),
+                Math.Max(workingArea.Top, Math.Min(location.Y, maximumTop)));
         }
 
         private void UpdateRoundedRegion()

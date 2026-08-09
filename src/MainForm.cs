@@ -80,8 +80,8 @@ namespace StockPerpTicker
             Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
             _appIcon = AppIconFactory.Create();
             Icon = _appIcon;
-            _taskbarTicker = settings.showTaskbarTickerOnMinimize
-                ? new TaskbarTickerForm(ShowFromTray, settings.TickerPosition)
+            _taskbarTicker = _settings.showTaskbarTickerOnMinimize
+                ? CreateTaskbarTicker()
                 : null;
 
             RestoreWindowBounds(initialState);
@@ -740,7 +740,36 @@ namespace StockPerpTicker
 
             if (_settings.showTaskbarTickerOnMinimize)
             {
-                _taskbarTicker = new TaskbarTickerForm(ShowFromTray, _settings.TickerPosition);
+                _taskbarTicker = CreateTaskbarTicker();
+            }
+        }
+
+        private TaskbarTickerForm CreateTaskbarTicker()
+        {
+            return new TaskbarTickerForm(
+                ShowFromTray,
+                _settings.TickerPosition,
+                _settings.hasCustomTaskbarTickerPosition,
+                _settings.taskbarTickerCustomLeft,
+                _settings.taskbarTickerCustomTop,
+                SaveCustomTaskbarTickerLocation);
+        }
+
+        private void SaveCustomTaskbarTickerLocation(Point location)
+        {
+            _settings.taskbarTickerPosition = "custom";
+            _settings.TickerPosition = TaskbarTickerPosition.Custom;
+            _settings.hasCustomTaskbarTickerPosition = true;
+            _settings.taskbarTickerCustomLeft = location.X;
+            _settings.taskbarTickerCustomTop = location.Y;
+            try
+            {
+                SettingsStore.Save(_settings);
+                Logger.Info("迷你行情条位置已保存：" + location.X + "," + location.Y + "。");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("保存迷你行情条自定义位置失败", ex);
             }
         }
 

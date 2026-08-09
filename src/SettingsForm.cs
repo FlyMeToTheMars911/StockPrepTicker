@@ -14,9 +14,12 @@ namespace StockPerpTicker
         private readonly Dictionary<int, CheckBox> _movingAverageChecks;
         private readonly CheckBox _showTaskbarTickerCheckBox;
         private readonly Label _tickerPositionLabel;
-        private readonly RadioButton _bottomLeftRadioButton;
-        private readonly RadioButton _bottomRightRadioButton;
+        private readonly ComboBox _tickerPositionComboBox;
+        private readonly Label _tickerPositionHint;
         private readonly ErrorProvider _errorProvider;
+        private bool _hasCustomTickerLocation;
+        private int _customTickerLeft;
+        private int _customTickerTop;
 
         internal SettingsForm(AppSettings settings)
         {
@@ -141,7 +144,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 293), new Size(464, 110));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 293), new Size(464, 125));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -149,13 +152,28 @@ namespace StockPerpTicker
                 Text = "最小化到托盘时显示迷你行情条"
             };
             _showTaskbarTickerCheckBox.CheckedChanged += delegate { UpdateTickerPositionEnabled(); };
-            _tickerPositionLabel = new Label { AutoSize = true, Location = new Point(16, 65), Text = "显示位置" };
-            _bottomLeftRadioButton = new RadioButton { AutoSize = true, Location = new Point(104, 63), Text = "屏幕左下角" };
-            _bottomRightRadioButton = new RadioButton { AutoSize = true, Location = new Point(224, 63), Text = "屏幕右下角" };
+            _tickerPositionLabel = new Label { AutoSize = true, Location = new Point(16, 64), Text = "显示位置" };
+            _tickerPositionComboBox = new ComboBox
+            {
+                Location = new Point(104, 59),
+                Size = new Size(188, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            _tickerPositionComboBox.Items.AddRange(new object[]
+            {
+                "屏幕左上角",
+                "屏幕左下角",
+                "屏幕右下角",
+                "自定义位置"
+            });
+            _tickerPositionHint = CreateHint(
+                "也可直接拖动迷你行情条，拖动后会自动保存位置",
+                new Point(104, 89),
+                new Size(340, 21));
             taskbarTickerGroup.Controls.Add(_showTaskbarTickerCheckBox);
             taskbarTickerGroup.Controls.Add(_tickerPositionLabel);
-            taskbarTickerGroup.Controls.Add(_bottomLeftRadioButton);
-            taskbarTickerGroup.Controls.Add(_bottomRightRadioButton);
+            taskbarTickerGroup.Controls.Add(_tickerPositionComboBox);
+            taskbarTickerGroup.Controls.Add(_tickerPositionHint);
 
             content.Controls.Add(instrumentGroup);
             content.Controls.Add(refreshGroup);
@@ -227,8 +245,25 @@ namespace StockPerpTicker
             }
 
             _showTaskbarTickerCheckBox.Checked = settings.showTaskbarTickerOnMinimize;
-            _bottomLeftRadioButton.Checked = settings.TickerPosition == TaskbarTickerPosition.BottomLeft;
-            _bottomRightRadioButton.Checked = settings.TickerPosition != TaskbarTickerPosition.BottomLeft;
+            _hasCustomTickerLocation = settings.hasCustomTaskbarTickerPosition;
+            _customTickerLeft = settings.taskbarTickerCustomLeft;
+            _customTickerTop = settings.taskbarTickerCustomTop;
+            switch (settings.TickerPosition)
+            {
+                case TaskbarTickerPosition.TopLeft:
+                    _tickerPositionComboBox.SelectedIndex = 0;
+                    break;
+                case TaskbarTickerPosition.BottomLeft:
+                    _tickerPositionComboBox.SelectedIndex = 1;
+                    break;
+                case TaskbarTickerPosition.Custom:
+                    _tickerPositionComboBox.SelectedIndex = 3;
+                    break;
+                default:
+                    _tickerPositionComboBox.SelectedIndex = 2;
+                    break;
+            }
+
             UpdateTickerPositionEnabled();
             _instrumentTextBox.Focus();
             _instrumentTextBox.SelectAll();
@@ -238,8 +273,8 @@ namespace StockPerpTicker
         {
             bool enabled = _showTaskbarTickerCheckBox.Checked;
             _tickerPositionLabel.Enabled = enabled;
-            _bottomLeftRadioButton.Enabled = enabled;
-            _bottomRightRadioButton.Enabled = enabled;
+            _tickerPositionComboBox.Enabled = enabled;
+            _tickerPositionHint.Enabled = enabled;
         }
 
         private void SaveSettings(object sender, EventArgs args)
@@ -259,7 +294,10 @@ namespace StockPerpTicker
                 refreshIntervalMilliseconds = decimal.ToInt32(_refreshIntervalInput.Value),
                 movingAverages = movingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
-                taskbarTickerPosition = _bottomLeftRadioButton.Checked ? "bottomLeft" : "bottomRight"
+                taskbarTickerPosition = GetSelectedTickerPosition(),
+                hasCustomTaskbarTickerPosition = _hasCustomTickerLocation,
+                taskbarTickerCustomLeft = _customTickerLeft,
+                taskbarTickerCustomTop = _customTickerTop
             };
             AppSettings normalizedSettings;
             string error;
@@ -274,6 +312,21 @@ namespace StockPerpTicker
             Settings = normalizedSettings;
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        private string GetSelectedTickerPosition()
+        {
+            switch (_tickerPositionComboBox.SelectedIndex)
+            {
+                case 0:
+                    return "topLeft";
+                case 1:
+                    return "bottomLeft";
+                case 3:
+                    return "custom";
+                default:
+                    return "bottomRight";
+            }
         }
     }
 }
