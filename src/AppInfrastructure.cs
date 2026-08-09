@@ -13,6 +13,7 @@ namespace StockPerpTicker
     internal sealed class AppSettings
     {
         public string instrumentId { get; set; }
+        public string[] instrumentIds { get; set; }
         public int refreshIntervalMilliseconds { get; set; }
         public int[] movingAverages { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
@@ -20,6 +21,7 @@ namespace StockPerpTicker
         public bool hasCustomTaskbarTickerPosition { get; set; }
         public int taskbarTickerCustomLeft { get; set; }
         public int taskbarTickerCustomTop { get; set; }
+        public int taskbarTickerRotationIntervalSeconds { get; set; }
         internal TaskbarTickerPosition TickerPosition { get; set; }
     }
 
@@ -39,6 +41,10 @@ namespace StockPerpTicker
         internal const int DefaultRefreshIntervalMilliseconds = 1000;
         internal const int MinimumRefreshIntervalMilliseconds = 250;
         internal const int MaximumRefreshIntervalMilliseconds = 60000;
+        internal const int DefaultTickerRotationIntervalSeconds = 5;
+        internal const int MinimumTickerRotationIntervalSeconds = 2;
+        internal const int MaximumTickerRotationIntervalSeconds = 60;
+        internal const int MaximumInstrumentCount = 20;
         private const string BottomLeftTickerPosition = "bottomLeft";
         private const string BottomRightTickerPosition = "bottomRight";
         private const string TopLeftTickerPosition = "topLeft";
@@ -115,11 +121,13 @@ namespace StockPerpTicker
             return new AppSettings
             {
                 instrumentId = "RAM-USDT-SWAP",
+                instrumentIds = new[] { "RAM-USDT-SWAP" },
                 refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds,
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
                 hasCustomTaskbarTickerPosition = false,
+                taskbarTickerRotationIntervalSeconds = DefaultTickerRotationIntervalSeconds,
                 TickerPosition = TaskbarTickerPosition.BottomRight
             };
         }
@@ -129,6 +137,7 @@ namespace StockPerpTicker
             return new AppSettings
             {
                 instrumentId = settings.instrumentId,
+                instrumentIds = settings.instrumentIds == null ? null : (string[])settings.instrumentIds.Clone(),
                 refreshIntervalMilliseconds = settings.refreshIntervalMilliseconds,
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
@@ -136,6 +145,7 @@ namespace StockPerpTicker
                 hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,
                 taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
                 taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
+                taskbarTickerRotationIntervalSeconds = settings.taskbarTickerRotationIntervalSeconds,
                 TickerPosition = settings.TickerPosition
             };
         }
@@ -144,16 +154,40 @@ namespace StockPerpTicker
         {
             normalizedSettings = null;
             error = null;
-            if (settings == null || string.IsNullOrWhiteSpace(settings.instrumentId))
+            if (settings == null)
             {
-                error = "请输入 OKX 永续合约代码。";
+                error = "设置内容不能为空。";
                 return false;
             }
 
-            string instrumentId = settings.instrumentId.Trim().ToUpperInvariant();
-            if (!instrumentId.EndsWith(SwapSuffix, StringComparison.Ordinal))
+            string[] sourceInstrumentIds = settings.instrumentIds != null && settings.instrumentIds.Length > default(int)
+                ? settings.instrumentIds
+                : new[] { settings.instrumentId };
+            List<string> normalizedInstrumentIds = new List<string>();
+            HashSet<string> uniqueInstrumentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string sourceInstrumentId in sourceInstrumentIds)
             {
-                error = "合约代码必须是完整的 OKX 永续合约 ID，例如 RAM-USDT-SWAP。";
+                string normalizedInstrumentId;
+                if (!TryNormalizeInstrumentId(sourceInstrumentId, out normalizedInstrumentId, out error))
+                {
+                    return false;
+                }
+
+                if (uniqueInstrumentIds.Add(normalizedInstrumentId))
+                {
+                    normalizedInstrumentIds.Add(normalizedInstrumentId);
+                }
+            }
+
+            if (normalizedInstrumentIds.Count == default(int))
+            {
+                error = "请至少添加一个 OKX 永续合约。";
+                return false;
+            }
+
+            if (normalizedInstrumentIds.Count > MaximumInstrumentCount)
+            {
+                error = "最多可以配置 " + MaximumInstrumentCount + " 个行情标的。";
                 return false;
             }
 
@@ -165,6 +199,17 @@ namespace StockPerpTicker
             {
                 error = "界面刷新间隔必须在 " + MinimumRefreshIntervalMilliseconds
                     + " 到 " + MaximumRefreshIntervalMilliseconds + " 毫秒之间。";
+                return false;
+            }
+
+            int tickerRotationInterval = settings.taskbarTickerRotationIntervalSeconds == default(int)
+                ? DefaultTickerRotationIntervalSeconds
+                : settings.taskbarTickerRotationIntervalSeconds;
+            if (tickerRotationInterval < MinimumTickerRotationIntervalSeconds
+                || tickerRotationInterval > MaximumTickerRotationIntervalSeconds)
+            {
+                error = "迷你行情轮播间隔必须在 " + MinimumTickerRotationIntervalSeconds
+                    + " 到 " + MaximumTickerRotationIntervalSeconds + " 秒之间。";
                 return false;
             }
 
@@ -222,7 +267,8 @@ namespace StockPerpTicker
 
             normalizedSettings = new AppSettings
             {
-                instrumentId = instrumentId,
+                instrumentId = normalizedInstrumentIds[0],
+                instrumentIds = normalizedInstrumentIds.ToArray(),
                 refreshIntervalMilliseconds = refreshInterval,
                 movingAverages = normalizedMovingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
@@ -230,8 +276,30 @@ namespace StockPerpTicker
                 hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,
                 taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
                 taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
+                taskbarTickerRotationIntervalSeconds = tickerRotationInterval,
                 TickerPosition = normalizedTickerPosition
             };
+            return true;
+        }
+
+        internal static bool TryNormalizeInstrumentId(string instrumentId, out string normalizedInstrumentId, out string error)
+        {
+            normalizedInstrumentId = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(instrumentId))
+            {
+                error = "请输入 OKX 永续合约代码。";
+                return false;
+            }
+
+            normalizedInstrumentId = instrumentId.Trim().ToUpperInvariant();
+            if (!normalizedInstrumentId.EndsWith(SwapSuffix, StringComparison.Ordinal))
+            {
+                error = "合约代码必须是完整的 OKX 永续合约 ID，例如 RAM-USDT-SWAP。";
+                normalizedInstrumentId = null;
+                return false;
+            }
+
             return true;
         }
 
@@ -275,6 +343,7 @@ namespace StockPerpTicker
         public int Height { get; set; }
         public bool TopMost { get; set; }
         public string RangeKey { get; set; }
+        public string InstrumentId { get; set; }
     }
 
     internal static class StateStore
@@ -342,7 +411,8 @@ namespace StockPerpTicker
                 Width = 500,
                 Height = 360,
                 TopMost = false,
-                RangeKey = "1D"
+                RangeKey = "1D",
+                InstrumentId = null
             };
         }
     }

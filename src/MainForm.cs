@@ -17,12 +17,18 @@ namespace StockPerpTicker
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
+        private static readonly Candle[] EmptyCandles = new Candle[0];
         private AppSettings _settings;
         private readonly OkxMarketClient _marketClient;
         private readonly CancellationTokenSource _applicationCancellation;
         private readonly List<Candle> _candles;
         private readonly Dictionary<string, Button> _rangeButtons;
+        private readonly Dictionary<string, Button> _instrumentButtons;
+        private readonly Dictionary<string, InstrumentInfo> _instrumentInfos;
+        private readonly Dictionary<string, List<Candle>> _miniTickerCandles;
         private readonly ChartControl _chart;
+        private readonly Panel _bottomBar;
+        private readonly FlowLayoutPanel _instrumentStrip;
         private TaskbarTickerForm _taskbarTicker;
         private readonly Label _symbolLabel;
         private readonly Label _priceLabel;
@@ -39,6 +45,7 @@ namespace StockPerpTicker
         private readonly System.Windows.Forms.Timer _fallbackTimer;
         private readonly System.Windows.Forms.Timer _memoryTimer;
         private readonly System.Windows.Forms.Timer _renderTimer;
+        private readonly System.Windows.Forms.Timer _miniTickerRotationTimer;
         private readonly Font _rangeFontRegular;
         private readonly Font _rangeFontBold;
         private readonly object _pendingCandleSync;
@@ -53,9 +60,12 @@ namespace StockPerpTicker
         private bool _fallbackBusy;
         private bool _minimizePending;
         private bool _restorePending;
+        private bool _miniTickerBusy;
         private Rectangle _lastNormalBounds;
         private int _rangeGeneration;
         private int _settingsGeneration;
+        private int _miniTickerIndex;
+        private string _selectedInstrumentId;
         private Candle _pendingCandle;
         private Icon _appIcon;
 
@@ -66,8 +76,12 @@ namespace StockPerpTicker
             _applicationCancellation = new CancellationTokenSource();
             _candles = new List<Candle>();
             _rangeButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
+            _instrumentButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
+            _instrumentInfos = new Dictionary<string, InstrumentInfo>(StringComparer.OrdinalIgnoreCase);
+            _miniTickerCandles = new Dictionary<string, List<Candle>>(StringComparer.OrdinalIgnoreCase);
             _pendingCandleSync = new object();
             _currentRange = RangeDefinition.Find(initialState.RangeKey);
+            _selectedInstrumentId = ResolveInitialInstrumentId(initialState.InstrumentId, _settings.instrumentIds);
             _rangeFontRegular = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
             _rangeFontBold = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
 
@@ -95,7 +109,7 @@ namespace StockPerpTicker
                 Location = new Point(10, 5),
                 Size = new Size(170, 22),
                 Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
-                Text = settings.instrumentId,
+                Text = _selectedInstrumentId,
                 TextAlign = ContentAlignment.MiddleLeft
             };
             _priceLabel = new Label
@@ -163,14 +177,36 @@ namespace StockPerpTicker
             LayoutTopBar(topBar);
 
             _chart = new ChartControl { Dock = DockStyle.Fill };
+            _bottomBar = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 42,
+                BackColor = Color.White
+            };
+            Panel rangeBar = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 42,
+                BackColor = Color.White
+            };
+            _instrumentStrip = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 32,
+                AutoScroll = true,
+                WrapContents = false,
+                FlowDirection = FlowDirection.LeftToRight,
+                Padding = new Padding(8, 0, 8, 0),
+                BackColor = Color.FromArgb(248, 250, 252),
+                Visible = false
+            };
 
-            Panel bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 42, BackColor = Color.White };
             int buttonLeft = 8;
             foreach (RangeDefinition range in RangeDefinition.All)
             {
                 Button button = CreateRangeButton(range, buttonLeft);
                 buttonLeft += range.Key == "1M" ? 63 : 47;
-                bottomBar.Controls.Add(button);
+                rangeBar.Controls.Add(button);
                 _rangeButtons[range.Key] = button;
             }
 
@@ -182,10 +218,13 @@ namespace StockPerpTicker
                 Padding = new Padding(0, 0, 8, 0),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point)
             };
-            bottomBar.Controls.Add(_clockLabel);
+            rangeBar.Controls.Add(_clockLabel);
+            _bottomBar.Controls.Add(_instrumentStrip);
+            _bottomBar.Controls.Add(rangeBar);
+            RebuildInstrumentButtons();
 
             Controls.Add(_chart);
-            Controls.Add(bottomBar);
+            Controls.Add(_bottomBar);
             Controls.Add(topBar);
 
             ContextMenuStrip trayMenu = new ContextMenuStrip();
@@ -229,6 +268,11 @@ namespace StockPerpTicker
             };
             _renderTimer.Tick += delegate { ApplyPendingRealtimeCandle(); };
             _renderTimer.Start();
+            _miniTickerRotationTimer = new System.Windows.Forms.Timer
+            {
+                Interval = _settings.taskbarTickerRotationIntervalSeconds * 1000
+            };
+            _miniTickerRotationTimer.Tick += async delegate { await RotateMiniTickerAsync(); };
             _memoryTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _memoryTimer.Tick += delegate
             {
@@ -289,6 +333,109 @@ namespace StockPerpTicker
             _statusLabel.Width = Math.Max(140, contentRight - _statusLabel.Left);
         }
 
+        private static string ResolveInitialInstrumentId(string savedInstrumentId, string[] configuredInstrumentIds)
+        {
+            if (!string.IsNullOrWhiteSpace(savedInstrumentId)
+                && configuredInstrumentIds.Any(item => string.Equals(item, savedInstrumentId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return savedInstrumentId;
+            }
+
+            return configuredInstrumentIds[0];
+        }
+
+        private void RebuildInstrumentButtons()
+        {
+            foreach (Button existingButton in _instrumentButtons.Values)
+            {
+                existingButton.Dispose();
+            }
+
+            _instrumentButtons.Clear();
+            _instrumentStrip.Controls.Clear();
+            foreach (string instrumentId in _settings.instrumentIds)
+            {
+                string capturedInstrumentId = instrumentId;
+                string displayName = CompactInstrumentId(instrumentId);
+                int buttonWidth = Math.Max(48, TextRenderer.MeasureText(displayName, _rangeFontBold).Width + 20);
+                Button button = new Button
+                {
+                    FlatStyle = FlatStyle.Flat,
+                    Margin = new Padding(0, 2, 8, 2),
+                    Padding = new Padding(4, 0, 4, 0),
+                    Size = new Size(buttonWidth, 27),
+                    Font = _rangeFontRegular,
+                    Text = displayName,
+                    TabStop = false,
+                    UseVisualStyleBackColor = false
+                };
+                button.FlatAppearance.BorderSize = 0;
+                button.FlatAppearance.MouseOverBackColor = Color.White;
+                button.Click += async delegate { await HandleInstrumentSelectionChangedAsync(capturedInstrumentId); };
+                _instrumentButtons[instrumentId] = button;
+                _instrumentStrip.Controls.Add(button);
+            }
+
+            bool showInstrumentStrip = _settings.instrumentIds.Length > 1;
+            _instrumentStrip.Visible = showInstrumentStrip;
+            _bottomBar.Height = showInstrumentStrip ? 74 : 42;
+            UpdateInstrumentSelection();
+        }
+
+        private void UpdateInstrumentSelection()
+        {
+            foreach (KeyValuePair<string, Button> entry in _instrumentButtons)
+            {
+                bool selected = string.Equals(entry.Key, _selectedInstrumentId, StringComparison.OrdinalIgnoreCase);
+                entry.Value.Font = selected ? _rangeFontBold : _rangeFontRegular;
+                entry.Value.ForeColor = selected ? UpColor : SecondaryTextColor;
+                entry.Value.BackColor = selected ? Color.White : _instrumentStrip.BackColor;
+                entry.Value.FlatAppearance.BorderSize = selected ? 1 : 0;
+                entry.Value.FlatAppearance.BorderColor = Color.FromArgb(210, 218, 226);
+            }
+        }
+
+        private static string CompactInstrumentId(string instrumentId)
+        {
+            int separator = instrumentId.IndexOf('-');
+            return separator > default(int) ? instrumentId.Substring(0, separator) : instrumentId;
+        }
+
+        private async Task HandleInstrumentSelectionChangedAsync(string instrumentId)
+        {
+            if (string.Equals(instrumentId, _selectedInstrumentId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _instrumentStrip.Enabled = false;
+            string previousInstrumentId = _selectedInstrumentId;
+            try
+            {
+                ++_settingsGeneration;
+                _selectedInstrumentId = instrumentId;
+                UpdateInstrumentSelection();
+                await ActivateInstrumentAsync(instrumentId, true);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _selectedInstrumentId = previousInstrumentId;
+                Logger.Error("切换行情标的失败：" + instrumentId, ex);
+                MessageBox.Show(ex.Message, "无法切换行情标的", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                if (!IsDisposed)
+                {
+                    _instrumentStrip.Enabled = true;
+                    UpdateInstrumentSelection();
+                }
+            }
+        }
+
         private async Task InitializeMarketAsync()
         {
             int settingsGeneration = _settingsGeneration;
@@ -296,19 +443,16 @@ namespace StockPerpTicker
             {
                 SetConnectionStatus(ConnectionStatus.Loading, "正在校验合约");
                 InstrumentInfo instrument = await _marketClient.ValidateInstrumentAsync(
-                    _settings.instrumentId,
+                    _selectedInstrumentId,
                     _applicationCancellation.Token);
                 if (settingsGeneration != _settingsGeneration || _applicationCancellation.IsCancellationRequested)
                 {
                     return;
                 }
 
-                _instrument = instrument;
-                Text = _instrument.InstrumentId + " - StockPerpTicker";
-                Logger.Info("合约校验成功：" + _instrument.InstrumentId);
-                await ChangeRangeAsync(_currentRange);
-                _tickerTimer.Start();
-                _fallbackTimer.Start();
+                _instrumentInfos[instrument.InstrumentId] = instrument;
+                await ActivateInstrumentAsync(_selectedInstrumentId, false);
+                Logger.Info("当前行情标的校验成功：" + instrument.InstrumentId + "。");
             }
             catch (OperationCanceledException)
             {
@@ -318,6 +462,92 @@ namespace StockPerpTicker
                 SetConnectionStatus(ConnectionStatus.Error, "行情初始化失败");
                 _chart.SetMessage(ex.Message + Environment.NewLine + "请点击右上角“设置”检查合约代码。", true);
                 Logger.Error("行情初始化失败", ex);
+            }
+        }
+
+        private async Task<Dictionary<string, InstrumentInfo>> ValidateInstrumentSetAsync(string[] instrumentIds)
+        {
+            Dictionary<string, InstrumentInfo> result = new Dictionary<string, InstrumentInfo>(StringComparer.OrdinalIgnoreCase);
+            for (int index = default(int); index < instrumentIds.Length; index++)
+            {
+                string instrumentId = instrumentIds[index];
+                InstrumentInfo existing;
+                if (_instrumentInfos.TryGetValue(instrumentId, out existing))
+                {
+                    result[instrumentId] = existing;
+                    continue;
+                }
+
+                SetConnectionStatus(
+                    ConnectionStatus.Loading,
+                    "正在校验合约 " + (index + 1) + "/" + instrumentIds.Length);
+                try
+                {
+                    result[instrumentId] = await _marketClient.ValidateInstrumentAsync(
+                        instrumentId,
+                        _applicationCancellation.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("校验 " + instrumentId + " 失败：" + ex.Message, ex);
+                }
+            }
+
+            return result;
+        }
+
+        private void ReplaceInstrumentInfos(Dictionary<string, InstrumentInfo> instruments)
+        {
+            _instrumentInfos.Clear();
+            foreach (KeyValuePair<string, InstrumentInfo> entry in instruments)
+            {
+                _instrumentInfos[entry.Key] = entry.Value;
+            }
+
+            List<string> removedCacheKeys = _miniTickerCandles.Keys
+                .Where(key => !_instrumentInfos.ContainsKey(key))
+                .ToList();
+            foreach (string key in removedCacheKeys)
+            {
+                _miniTickerCandles.Remove(key);
+            }
+        }
+
+        private async Task ActivateInstrumentAsync(string instrumentId, bool saveState)
+        {
+            InstrumentInfo instrument;
+            if (!_instrumentInfos.TryGetValue(instrumentId, out instrument))
+            {
+                SetConnectionStatus(ConnectionStatus.Loading, "正在校验 " + instrumentId);
+                instrument = await _marketClient.ValidateInstrumentAsync(
+                    instrumentId,
+                    _applicationCancellation.Token);
+                _instrumentInfos[instrumentId] = instrument;
+            }
+
+            _tickerTimer.Stop();
+            _fallbackTimer.Stop();
+            StopRealtimeStream();
+            _instrument = instrument;
+            _selectedInstrumentId = instrument.InstrumentId;
+            _snapshot = null;
+            _candles.Clear();
+            _symbolLabel.Text = instrument.InstrumentId;
+            _priceLabel.Text = "--";
+            _changeLabel.Text = "--";
+            Text = instrument.InstrumentId + " - StockPerpTicker";
+            _notifyIcon.Text = "StockPerpTicker";
+            UpdateInstrumentSelection();
+            await ChangeRangeAsync(_currentRange);
+            _tickerTimer.Start();
+            _fallbackTimer.Start();
+            if (saveState)
+            {
+                SaveWindowState();
             }
         }
 
@@ -556,7 +786,8 @@ namespace StockPerpTicker
                         _instrument.InstrumentId,
                         _snapshot,
                         _candles,
-                        _instrument.TickSize);
+                        _instrument.TickSize,
+                        false);
                 }
             }
         }
@@ -662,42 +893,33 @@ namespace StockPerpTicker
         {
             ConnectionStatus previousStatus = _connectionStatus;
             string previousMessage = _connectionMessage;
+            string currentInstrumentId = _instrument == null ? _selectedInstrumentId : _instrument.InstrumentId;
+            string targetInstrumentId = candidate.instrumentIds.Any(
+                item => string.Equals(item, currentInstrumentId, StringComparison.OrdinalIgnoreCase))
+                ? currentInstrumentId
+                : candidate.instrumentIds[0];
             bool instrumentChanged = _instrument == null
-                || !string.Equals(_instrument.InstrumentId, candidate.instrumentId, StringComparison.OrdinalIgnoreCase);
+                || !string.Equals(_instrument.InstrumentId, targetInstrumentId, StringComparison.OrdinalIgnoreCase);
             try
             {
-                InstrumentInfo validatedInstrument = _instrument;
-                if (instrumentChanged)
-                {
-                    SetConnectionStatus(ConnectionStatus.Loading, "正在校验 " + candidate.instrumentId);
-                    validatedInstrument = await _marketClient.ValidateInstrumentAsync(
-                        candidate.instrumentId,
-                        _applicationCancellation.Token);
-                }
+                Dictionary<string, InstrumentInfo> validatedInstruments = await ValidateInstrumentSetAsync(
+                    candidate.instrumentIds);
 
                 SettingsStore.Save(candidate);
                 ++_settingsGeneration;
                 _settings = SettingsStore.Clone(candidate);
+                _selectedInstrumentId = targetInstrumentId;
+                ReplaceInstrumentInfos(validatedInstruments);
+                RebuildInstrumentButtons();
                 _renderTimer.Interval = _settings.refreshIntervalMilliseconds;
+                _miniTickerRotationTimer.Interval = _settings.taskbarTickerRotationIntervalSeconds * 1000;
+                _miniTickerIndex = default(int);
                 ConfigureTaskbarTicker();
 
                 if (instrumentChanged)
                 {
-                    _tickerTimer.Stop();
-                    _fallbackTimer.Stop();
-                    StopRealtimeStream();
-                    _instrument = validatedInstrument;
-                    _snapshot = null;
-                    _candles.Clear();
-                    _symbolLabel.Text = _instrument.InstrumentId;
-                    _priceLabel.Text = "--";
-                    _changeLabel.Text = "--";
-                    Text = _instrument.InstrumentId + " - StockPerpTicker";
-                    _notifyIcon.Text = "StockPerpTicker";
-                    Logger.Info("设置已保存，正在切换合约：" + _instrument.InstrumentId);
-                    await ChangeRangeAsync(_currentRange);
-                    _tickerTimer.Start();
-                    _fallbackTimer.Start();
+                    Logger.Info("设置已保存，正在切换合约：" + targetInstrumentId);
+                    await ActivateInstrumentAsync(targetInstrumentId, true);
                 }
                 else
                 {
@@ -731,6 +953,7 @@ namespace StockPerpTicker
 
         private void ConfigureTaskbarTicker()
         {
+            _miniTickerRotationTimer.Stop();
             if (_taskbarTicker != null)
             {
                 _taskbarTicker.HideTicker();
@@ -741,6 +964,121 @@ namespace StockPerpTicker
             if (_settings.showTaskbarTickerOnMinimize)
             {
                 _taskbarTicker = CreateTaskbarTicker();
+            }
+        }
+
+        private void StartMiniTickerRotation()
+        {
+            _miniTickerRotationTimer.Stop();
+            if (_taskbarTicker == null || !_taskbarTicker.Visible || _settings.instrumentIds.Length <= 1)
+            {
+                return;
+            }
+
+            int activeIndex = Array.FindIndex(
+                _settings.instrumentIds,
+                item => string.Equals(item, _selectedInstrumentId, StringComparison.OrdinalIgnoreCase));
+            _miniTickerIndex = activeIndex >= default(int) ? activeIndex : default(int);
+            _miniTickerRotationTimer.Interval = _settings.taskbarTickerRotationIntervalSeconds * 1000;
+            _miniTickerRotationTimer.Start();
+        }
+
+        private async Task RotateMiniTickerAsync()
+        {
+            if (_miniTickerBusy
+                || _taskbarTicker == null
+                || !_taskbarTicker.Visible
+                || _settings.instrumentIds.Length <= 1
+                || _applicationCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _miniTickerBusy = true;
+            int settingsGeneration = _settingsGeneration;
+            TaskbarTickerForm ticker = _taskbarTicker;
+            try
+            {
+                _miniTickerIndex = (_miniTickerIndex + 1) % _settings.instrumentIds.Length;
+                string instrumentId = _settings.instrumentIds[_miniTickerIndex];
+                InstrumentInfo instrument;
+                if (!_instrumentInfos.TryGetValue(instrumentId, out instrument))
+                {
+                    instrument = await _marketClient.ValidateInstrumentAsync(
+                        instrumentId,
+                        _applicationCancellation.Token);
+                    if (settingsGeneration != _settingsGeneration)
+                    {
+                        return;
+                    }
+
+                    _instrumentInfos[instrumentId] = instrument;
+                }
+
+                MarketSnapshot snapshot = await _marketClient.FetchTickerAsync(
+                    instrumentId,
+                    _applicationCancellation.Token);
+                IList<Candle> miniCandles;
+                bool needsMiniCandles = false;
+                if (_instrument != null
+                    && string.Equals(_instrument.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
+                {
+                    miniCandles = _candles;
+                }
+                else
+                {
+                    List<Candle> cachedCandles;
+                    if (!_miniTickerCandles.TryGetValue(instrumentId, out cachedCandles))
+                    {
+                        needsMiniCandles = true;
+                        miniCandles = EmptyCandles;
+                    }
+                    else
+                    {
+                        miniCandles = cachedCandles;
+                    }
+                }
+
+                if (settingsGeneration == _settingsGeneration
+                    && ReferenceEquals(ticker, _taskbarTicker)
+                    && ticker.Visible)
+                {
+                    ticker.UpdateMarket(instrumentId, snapshot, miniCandles, instrument.TickSize, true);
+                }
+
+                if (needsMiniCandles)
+                {
+                    List<Candle> loadedCandles = await _marketClient.FetchMiniTickerCandlesAsync(
+                        instrumentId,
+                        _applicationCancellation.Token);
+                    _miniTickerCandles[instrumentId] = loadedCandles;
+                    if (settingsGeneration == _settingsGeneration
+                        && ReferenceEquals(ticker, _taskbarTicker)
+                        && ticker.Visible)
+                    {
+                        ticker.UpdateMarket(instrumentId, snapshot, loadedCandles, instrument.TickSize, false);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("轮播迷你行情标的失败", ex);
+            }
+            finally
+            {
+                _miniTickerBusy = false;
+            }
+        }
+
+        private void HideTaskbarTicker()
+        {
+            _miniTickerRotationTimer.Stop();
+            if (_taskbarTicker != null)
+            {
+                _taskbarTicker.HideTicker();
             }
         }
 
@@ -802,10 +1140,7 @@ namespace StockPerpTicker
             if (Visible)
             {
                 SaveWindowState();
-                if (_taskbarTicker != null)
-                {
-                    _taskbarTicker.HideTicker();
-                }
+                HideTaskbarTicker();
 
                 Hide();
             }
@@ -858,10 +1193,7 @@ namespace StockPerpTicker
                 BringToFront();
                 Activate();
                 Update();
-                if (_taskbarTicker != null)
-                {
-                    _taskbarTicker.HideTicker();
-                }
+                HideTaskbarTicker();
 
                 Logger.Info(string.Format(
                     "主窗口已从托盘或迷你行情条恢复，位置：{0},{1}，尺寸：{2}x{3}。",
@@ -899,6 +1231,7 @@ namespace StockPerpTicker
                 if (_taskbarTicker != null)
                 {
                     _taskbarTicker.ShowTicker(referenceBounds);
+                    StartMiniTickerRotation();
                 }
 
                 Logger.Info(_taskbarTicker == null
@@ -921,10 +1254,7 @@ namespace StockPerpTicker
             {
                 args.Cancel = true;
                 SaveWindowState();
-                if (_taskbarTicker != null)
-                {
-                    _taskbarTicker.HideTicker();
-                }
+                HideTaskbarTicker();
 
                 Hide();
                 return;
@@ -940,13 +1270,11 @@ namespace StockPerpTicker
             _fallbackTimer.Stop();
             _renderTimer.Stop();
             _memoryTimer.Stop();
+            _miniTickerRotationTimer.Stop();
             _applicationCancellation.Cancel();
             StopRealtimeStream();
             _notifyIcon.Visible = false;
-            if (_taskbarTicker != null)
-            {
-                _taskbarTicker.HideTicker();
-            }
+            HideTaskbarTicker();
         }
 
         private void SaveWindowState()
@@ -962,7 +1290,8 @@ namespace StockPerpTicker
                 Width = Math.Max(MinimumSize.Width, bounds.Width),
                 Height = Math.Max(MinimumSize.Height, bounds.Height),
                 TopMost = TopMost,
-                RangeKey = _currentRange.Key
+                RangeKey = _currentRange.Key,
+                InstrumentId = _selectedInstrumentId
             });
         }
 
@@ -1061,6 +1390,7 @@ namespace StockPerpTicker
                 _fallbackTimer.Dispose();
                 _renderTimer.Dispose();
                 _memoryTimer.Dispose();
+                _miniTickerRotationTimer.Dispose();
                 _rangeFontRegular.Dispose();
                 _rangeFontBold.Dispose();
                 _notifyIcon.Dispose();
@@ -1075,4 +1405,5 @@ namespace StockPerpTicker
             base.Dispose(disposing);
         }
     }
+
 }

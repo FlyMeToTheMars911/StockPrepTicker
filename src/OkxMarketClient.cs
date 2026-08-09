@@ -107,6 +107,23 @@ namespace StockPerpTicker
             return candles.OrderBy(item => item.Timestamp).LastOrDefault();
         }
 
+        internal async Task<List<Candle>> FetchMiniTickerCandlesAsync(
+            string instrumentId,
+            CancellationToken cancellationToken)
+        {
+            const int MiniTickerCandleCount = 48;
+            const string MiniTickerBar = "5m";
+            string path = BuildCandlePath(
+                "/api/v5/market/candles",
+                instrumentId,
+                MiniTickerBar,
+                MiniTickerCandleCount,
+                null);
+            List<Candle> candles = JsonParser.ParseCandles(
+                await GetStringAsync(path, cancellationToken).ConfigureAwait(false));
+            return candles.OrderBy(item => item.Timestamp).ToList();
+        }
+
         internal async Task<MarketSnapshot> FetchTickerAsync(string instrumentId, CancellationToken cancellationToken)
         {
             string path = "/api/v5/market/ticker?instId=" + Uri.EscapeDataString(instrumentId);

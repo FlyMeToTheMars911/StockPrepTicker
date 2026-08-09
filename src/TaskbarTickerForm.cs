@@ -13,20 +13,16 @@ namespace StockPerpTicker
         private const int WindowHeight = 42;
         private const int ScreenEdgeGap = 6;
         private const int RoundedCornerRadius = 9;
-        private const float BorderThickness = 2f;
+        private const int ContentInset = 5;
+        private const float BorderThickness = 3f;
         private const int ToolWindowStyle = 0x00000080;
         private const int NoActivateStyle = 0x08000000;
-        private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
-        private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
-        private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
-        private static readonly Color BorderColor = Color.FromArgb(120, 132, 150);
-        private static readonly Color TickerBackground = Color.FromArgb(248, 250, 252);
+        private static readonly Color BorderColor = Color.FromArgb(76, 88, 105);
         private readonly Action _restoreAction;
         private readonly Action<Point> _customLocationChanged;
-        private readonly Label _symbolLabel;
-        private readonly Label _priceLabel;
-        private readonly Label _changeLabel;
-        private readonly SparklineControl _sparkline;
+        private readonly System.Windows.Forms.Timer _scrollTimer;
+        private TickerPage _currentPage;
+        private TickerPage _incomingPage;
         private TaskbarTickerPosition _tickerPosition;
         private bool _hasCustomLocation;
         private int _customLeft;
@@ -57,48 +53,26 @@ namespace StockPerpTicker
             StartPosition = FormStartPosition.Manual;
             TopMost = true;
             Size = new Size(WindowWidth, WindowHeight);
-            BackColor = TickerBackground;
+            BackColor = BorderColor;
             AutoScaleMode = AutoScaleMode.Dpi;
-            Padding = new Padding(2);
+            Padding = new Padding(ContentInset);
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
-            _symbolLabel = new Label
+            _currentPage = new TickerPage
             {
-                Location = new Point(8, 4),
-                Size = new Size(50, 34),
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = TextColor,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Text = "--"
+                Location = new Point(ContentInset, ContentInset),
+                Size = new Size(WindowWidth - (ContentInset * 2), WindowHeight - (ContentInset * 2))
             };
-            _priceLabel = new Label
+            _incomingPage = new TickerPage
             {
-                Location = new Point(58, 4),
-                Size = new Size(60, 34),
-                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = TextColor,
-                TextAlign = ContentAlignment.MiddleRight,
-                Text = "--"
+                Location = new Point(ContentInset, WindowHeight),
+                Size = new Size(WindowWidth - (ContentInset * 2), WindowHeight - (ContentInset * 2)),
+                Visible = false
             };
-            _changeLabel = new Label
-            {
-                Location = new Point(120, 4),
-                Size = new Size(60, 34),
-                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
-                ForeColor = TextColor,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Text = "--"
-            };
-            _sparkline = new SparklineControl
-            {
-                Location = new Point(184, 6),
-                Size = new Size(90, 30)
-            };
-
-            Controls.Add(_symbolLabel);
-            Controls.Add(_priceLabel);
-            Controls.Add(_changeLabel);
-            Controls.Add(_sparkline);
+            Controls.Add(_currentPage);
+            Controls.Add(_incomingPage);
+            _scrollTimer = new System.Windows.Forms.Timer { Interval = 15 };
+            _scrollTimer.Tick += AnimateNextPage;
             AttachPointerInteraction(this);
             Resize += delegate { UpdateRoundedRegion(); };
             UpdateRoundedRegion();
@@ -123,23 +97,40 @@ namespace StockPerpTicker
             string instrumentId,
             MarketSnapshot snapshot,
             IList<Candle> candles,
-            decimal tickSize)
+            decimal tickSize,
+            bool allowSwitch)
         {
-            _symbolLabel.Text = GetCompactSymbol(instrumentId);
-            if (snapshot == null)
+            if (_scrollTimer.Enabled
+                && string.Equals(_incomingPage.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
             {
-                _priceLabel.Text = "--";
-                _changeLabel.Text = "--";
-                _sparkline.SetData(candles, UpColor);
+                _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
                 return;
             }
 
-            decimal change = snapshot.ChangePercent;
-            Color trendColor = change >= decimal.Zero ? UpColor : DownColor;
-            _priceLabel.Text = FormatHelper.Price(snapshot.LastPrice, tickSize);
-            _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00") + "%";
-            _changeLabel.ForeColor = trendColor;
-            _sparkline.SetData(candles, trendColor);
+            if (string.IsNullOrEmpty(_currentPage.InstrumentId)
+                || string.Equals(_currentPage.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
+            {
+                _currentPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
+                return;
+            }
+
+            if (!allowSwitch)
+            {
+                return;
+            }
+
+            CompleteScrollAnimation();
+            _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
+            if (!Visible)
+            {
+                SwapPages();
+                return;
+            }
+
+            _incomingPage.Top = Height;
+            _incomingPage.Visible = true;
+            _incomingPage.BringToFront();
+            _scrollTimer.Start();
         }
 
         internal void ShowTicker(Rectangle referenceBounds)
@@ -190,6 +181,7 @@ namespace StockPerpTicker
 
         internal void HideTicker()
         {
+            CompleteScrollAnimation();
             if (Visible)
             {
                 Hide();
@@ -200,12 +192,44 @@ namespace StockPerpTicker
         {
             base.OnPaint(args);
             args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle borderBounds = new Rectangle(1, 1, Width - 3, Height - 3);
+            Rectangle borderBounds = new Rectangle(2, 2, Width - 5, Height - 5);
             using (GraphicsPath borderPath = CreateRoundedRectanglePath(borderBounds, RoundedCornerRadius - 1))
             using (Pen borderPen = new Pen(BorderColor, BorderThickness))
             {
                 args.Graphics.DrawPath(borderPen, borderPath);
             }
+        }
+
+        private void AnimateNextPage(object sender, EventArgs args)
+        {
+            const int ScrollStep = 6;
+            _currentPage.Top -= ScrollStep;
+            _incomingPage.Top -= ScrollStep;
+            if (_incomingPage.Top <= ContentInset)
+            {
+                SwapPages();
+            }
+        }
+
+        private void CompleteScrollAnimation()
+        {
+            if (_scrollTimer.Enabled)
+            {
+                SwapPages();
+            }
+        }
+
+        private void SwapPages()
+        {
+            _scrollTimer.Stop();
+            _currentPage.Visible = false;
+            TickerPage previousPage = _currentPage;
+            _currentPage = _incomingPage;
+            _incomingPage = previousPage;
+            _currentPage.Top = ContentInset;
+            _currentPage.Visible = true;
+            _incomingPage.Top = Height;
+            _incomingPage.Visible = false;
         }
 
         private void AttachPointerInteraction(Control control)
@@ -227,6 +251,7 @@ namespace StockPerpTicker
                 return;
             }
 
+            CompleteScrollAnimation();
             _pointerDown = true;
             _dragMoved = false;
             _pointerDownScreenPosition = Cursor.Position;
@@ -323,7 +348,7 @@ namespace StockPerpTicker
             }
         }
 
-        private static GraphicsPath CreateRoundedRectanglePath(Rectangle rectangle, int radius)
+        internal static GraphicsPath CreateRoundedRectanglePath(Rectangle rectangle, int radius)
         {
             GraphicsPath path = new GraphicsPath();
             int diameter = radius * 2;
@@ -339,6 +364,99 @@ namespace StockPerpTicker
             return path;
         }
 
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _scrollTimer.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    internal sealed class TickerPage : Panel
+    {
+        private const int ContentCornerRadius = 5;
+        private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
+        private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
+        private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
+        private static readonly Color TickerBackground = Color.FromArgb(248, 250, 252);
+        private readonly Label _symbolLabel;
+        private readonly Label _priceLabel;
+        private readonly Label _changeLabel;
+        private readonly SparklineControl _sparkline;
+
+        internal TickerPage()
+        {
+            BackColor = TickerBackground;
+            _symbolLabel = new Label
+            {
+                Location = new Point(4, 0),
+                Size = new Size(50, 32),
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = TextColor,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Text = "--"
+            };
+            _priceLabel = new Label
+            {
+                Location = new Point(54, 0),
+                Size = new Size(60, 32),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = TextColor,
+                TextAlign = ContentAlignment.MiddleRight,
+                Text = "--"
+            };
+            _changeLabel = new Label
+            {
+                Location = new Point(116, 0),
+                Size = new Size(60, 32),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = TextColor,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "--"
+            };
+            _sparkline = new SparklineControl
+            {
+                Location = new Point(178, 3),
+                Size = new Size(86, 26)
+            };
+            Controls.Add(_symbolLabel);
+            Controls.Add(_priceLabel);
+            Controls.Add(_changeLabel);
+            Controls.Add(_sparkline);
+            Resize += delegate { UpdateRoundedRegion(); };
+            UpdateRoundedRegion();
+        }
+
+        internal string InstrumentId { get; private set; }
+
+        internal void UpdateMarket(
+            string instrumentId,
+            MarketSnapshot snapshot,
+            IList<Candle> candles,
+            decimal tickSize)
+        {
+            InstrumentId = instrumentId;
+            _symbolLabel.Text = GetCompactSymbol(instrumentId);
+            if (snapshot == null)
+            {
+                _priceLabel.Text = "--";
+                _changeLabel.Text = "--";
+                _changeLabel.ForeColor = TextColor;
+                _sparkline.SetData(candles, UpColor);
+                return;
+            }
+
+            decimal change = snapshot.ChangePercent;
+            Color trendColor = change >= decimal.Zero ? UpColor : DownColor;
+            _priceLabel.Text = FormatHelper.Price(snapshot.LastPrice, tickSize);
+            _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00") + "%";
+            _changeLabel.ForeColor = trendColor;
+            _sparkline.SetData(candles, trendColor);
+        }
+
         private static string GetCompactSymbol(string instrumentId)
         {
             if (string.IsNullOrEmpty(instrumentId))
@@ -348,6 +466,19 @@ namespace StockPerpTicker
 
             int separator = instrumentId.IndexOf('-');
             return separator > default(int) ? instrumentId.Substring(0, separator) : instrumentId;
+        }
+
+        private void UpdateRoundedRegion()
+        {
+            using (GraphicsPath path = TaskbarTickerForm.CreateRoundedRectanglePath(ClientRectangle, ContentCornerRadius))
+            {
+                Region oldRegion = Region;
+                Region = new Region(path);
+                if (oldRegion != null)
+                {
+                    oldRegion.Dispose();
+                }
+            }
         }
     }
 

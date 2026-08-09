@@ -9,13 +9,18 @@ namespace StockPerpTicker
     {
         private static readonly Color AccentColor = Color.FromArgb(8, 153, 129);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
-        private readonly TextBox _instrumentTextBox;
+        private readonly ListBox _instrumentListBox;
+        private readonly TextBox _instrumentInput;
+        private readonly Button _removeInstrumentButton;
         private readonly NumericUpDown _refreshIntervalInput;
         private readonly Dictionary<int, CheckBox> _movingAverageChecks;
         private readonly CheckBox _showTaskbarTickerCheckBox;
         private readonly Label _tickerPositionLabel;
         private readonly ComboBox _tickerPositionComboBox;
         private readonly Label _tickerPositionHint;
+        private readonly Label _tickerRotationLabel;
+        private readonly NumericUpDown _tickerRotationIntervalInput;
+        private readonly Label _tickerRotationUnitLabel;
         private readonly ErrorProvider _errorProvider;
         private bool _hasCustomTickerLocation;
         private int _customTickerLeft;
@@ -28,7 +33,7 @@ namespace StockPerpTicker
             _errorProvider = new ErrorProvider { BlinkStyle = ErrorBlinkStyle.NeverBlink, ContainerControl = this };
 
             Text = "设置 - StockPerpTicker";
-            ClientSize = new Size(500, 550);
+            ClientSize = new Size(500, 670);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -97,19 +102,48 @@ namespace StockPerpTicker
                 BackColor = Color.White
             };
 
-            GroupBox instrumentGroup = CreateGroup("行情合约", new Point(18, 12), new Size(464, 95));
-            _instrumentTextBox = new TextBox
+            GroupBox instrumentGroup = CreateGroup("行情标的", new Point(18, 12), new Size(464, 180));
+            _instrumentListBox = new ListBox
             {
                 Location = new Point(16, 24),
-                Size = new Size(430, 25),
+                Size = new Size(300, 91),
+                IntegralHeight = false
+            };
+            _instrumentListBox.SelectedIndexChanged += delegate
+            {
+                _removeInstrumentButton.Enabled = _instrumentListBox.SelectedIndex >= default(int);
+            };
+            _instrumentInput = new TextBox
+            {
+                Location = new Point(16, 124),
+                Size = new Size(300, 25),
                 CharacterCasing = CharacterCasing.Upper,
                 MaxLength = 64
             };
-            _instrumentTextBox.TextChanged += delegate { _errorProvider.SetError(_instrumentTextBox, string.Empty); };
-            instrumentGroup.Controls.Add(_instrumentTextBox);
-            instrumentGroup.Controls.Add(CreateHint("请输入完整的 OKX 永续合约代码，例如 AAPL-USDT-SWAP", new Point(16, 55), new Size(430, 21)));
+            _instrumentInput.TextChanged += delegate { _errorProvider.SetError(_instrumentInput, string.Empty); };
+            _instrumentInput.KeyDown += delegate(object sender, KeyEventArgs args)
+            {
+                if (args.KeyCode == Keys.Enter)
+                {
+                    AddInstrument();
+                    args.SuppressKeyPress = true;
+                }
+            };
+            Button addInstrumentButton = CreateSecondaryButton("添加标的", new Point(326, 123), new Size(120, 28));
+            addInstrumentButton.Click += delegate { AddInstrument(); };
+            _removeInstrumentButton = CreateSecondaryButton("移除选中", new Point(326, 24), new Size(120, 28));
+            _removeInstrumentButton.Enabled = false;
+            _removeInstrumentButton.Click += delegate { RemoveSelectedInstrument(); };
+            instrumentGroup.Controls.Add(_instrumentListBox);
+            instrumentGroup.Controls.Add(_instrumentInput);
+            instrumentGroup.Controls.Add(addInstrumentButton);
+            instrumentGroup.Controls.Add(_removeInstrumentButton);
+            instrumentGroup.Controls.Add(CreateHint(
+                "输入完整的 OKX 永续合约代码并添加，最多 " + SettingsStore.MaximumInstrumentCount + " 个",
+                new Point(16, 154),
+                new Size(430, 20)));
 
-            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 115), new Size(464, 78));
+            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 200), new Size(464, 78));
             _refreshIntervalInput = new NumericUpDown
             {
                 Location = new Point(16, 25),
@@ -123,7 +157,7 @@ namespace StockPerpTicker
             refreshGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(153, 28), Text = "毫秒" });
             refreshGroup.Controls.Add(CreateHint("仅影响界面绘制，网络行情会持续接收", new Point(211, 27), new Size(235, 21)));
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 201), new Size(464, 84));
+            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 286), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -144,7 +178,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 293), new Size(464, 125));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 378), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -170,10 +204,23 @@ namespace StockPerpTicker
                 "也可直接拖动迷你行情条，拖动后会自动保存位置",
                 new Point(104, 89),
                 new Size(340, 21));
+            _tickerRotationLabel = new Label { AutoSize = true, Location = new Point(16, 122), Text = "标的轮播" };
+            _tickerRotationIntervalInput = new NumericUpDown
+            {
+                Location = new Point(104, 117),
+                Size = new Size(90, 25),
+                Minimum = SettingsStore.MinimumTickerRotationIntervalSeconds,
+                Maximum = SettingsStore.MaximumTickerRotationIntervalSeconds,
+                TextAlign = HorizontalAlignment.Right
+            };
+            _tickerRotationUnitLabel = new Label { AutoSize = true, Location = new Point(201, 121), Text = "秒切换一次" };
             taskbarTickerGroup.Controls.Add(_showTaskbarTickerCheckBox);
             taskbarTickerGroup.Controls.Add(_tickerPositionLabel);
             taskbarTickerGroup.Controls.Add(_tickerPositionComboBox);
             taskbarTickerGroup.Controls.Add(_tickerPositionHint);
+            taskbarTickerGroup.Controls.Add(_tickerRotationLabel);
+            taskbarTickerGroup.Controls.Add(_tickerRotationIntervalInput);
+            taskbarTickerGroup.Controls.Add(_tickerRotationUnitLabel);
 
             content.Controls.Add(instrumentGroup);
             content.Controls.Add(refreshGroup);
@@ -184,7 +231,7 @@ namespace StockPerpTicker
             Controls.Add(footer);
             Controls.Add(header);
 
-            _errorProvider.SetIconAlignment(_instrumentTextBox, ErrorIconAlignment.MiddleRight);
+            _errorProvider.SetIconAlignment(_instrumentInput, ErrorIconAlignment.MiddleRight);
             AcceptButton = saveButton;
             CancelButton = cancelButton;
             LoadSettings(editableSettings);
@@ -233,7 +280,24 @@ namespace StockPerpTicker
 
         private void LoadSettings(AppSettings settings)
         {
-            _instrumentTextBox.Text = settings.instrumentId;
+            _instrumentListBox.Items.Clear();
+            string[] instrumentIds = settings.instrumentIds != null && settings.instrumentIds.Length > default(int)
+                ? settings.instrumentIds
+                : new[] { settings.instrumentId };
+            foreach (string instrumentId in instrumentIds)
+            {
+                if (!string.IsNullOrWhiteSpace(instrumentId))
+                {
+                    _instrumentListBox.Items.Add(instrumentId);
+                }
+            }
+
+            if (_instrumentListBox.Items.Count > default(int))
+            {
+                _instrumentListBox.SelectedIndex = default(int);
+            }
+
+            _instrumentInput.Clear();
             decimal refreshInterval = Math.Max(
                 SettingsStore.MinimumRefreshIntervalMilliseconds,
                 Math.Min(SettingsStore.MaximumRefreshIntervalMilliseconds, settings.refreshIntervalMilliseconds));
@@ -248,6 +312,13 @@ namespace StockPerpTicker
             _hasCustomTickerLocation = settings.hasCustomTaskbarTickerPosition;
             _customTickerLeft = settings.taskbarTickerCustomLeft;
             _customTickerTop = settings.taskbarTickerCustomTop;
+            _tickerRotationIntervalInput.Value = Math.Max(
+                SettingsStore.MinimumTickerRotationIntervalSeconds,
+                Math.Min(
+                    SettingsStore.MaximumTickerRotationIntervalSeconds,
+                    settings.taskbarTickerRotationIntervalSeconds == default(int)
+                        ? SettingsStore.DefaultTickerRotationIntervalSeconds
+                        : settings.taskbarTickerRotationIntervalSeconds));
             switch (settings.TickerPosition)
             {
                 case TaskbarTickerPosition.TopLeft:
@@ -265,8 +336,7 @@ namespace StockPerpTicker
             }
 
             UpdateTickerPositionEnabled();
-            _instrumentTextBox.Focus();
-            _instrumentTextBox.SelectAll();
+            _instrumentInput.Focus();
         }
 
         private void UpdateTickerPositionEnabled()
@@ -275,10 +345,24 @@ namespace StockPerpTicker
             _tickerPositionLabel.Enabled = enabled;
             _tickerPositionComboBox.Enabled = enabled;
             _tickerPositionHint.Enabled = enabled;
+            _tickerRotationLabel.Enabled = enabled;
+            _tickerRotationIntervalInput.Enabled = enabled;
+            _tickerRotationUnitLabel.Enabled = enabled;
         }
 
         private void SaveSettings(object sender, EventArgs args)
         {
+            if (!string.IsNullOrWhiteSpace(_instrumentInput.Text) && !AddInstrument())
+            {
+                return;
+            }
+
+            List<string> instrumentIds = new List<string>();
+            foreach (object item in _instrumentListBox.Items)
+            {
+                instrumentIds.Add(Convert.ToString(item));
+            }
+
             List<int> movingAverages = new List<int>();
             foreach (int period in SettingsStore.MovingAverageOptions)
             {
@@ -290,28 +374,86 @@ namespace StockPerpTicker
 
             AppSettings candidate = new AppSettings
             {
-                instrumentId = _instrumentTextBox.Text,
+                instrumentId = instrumentIds.Count > default(int) ? instrumentIds[0] : null,
+                instrumentIds = instrumentIds.ToArray(),
                 refreshIntervalMilliseconds = decimal.ToInt32(_refreshIntervalInput.Value),
                 movingAverages = movingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
                 taskbarTickerPosition = GetSelectedTickerPosition(),
                 hasCustomTaskbarTickerPosition = _hasCustomTickerLocation,
                 taskbarTickerCustomLeft = _customTickerLeft,
-                taskbarTickerCustomTop = _customTickerTop
+                taskbarTickerCustomTop = _customTickerTop,
+                taskbarTickerRotationIntervalSeconds = decimal.ToInt32(_tickerRotationIntervalInput.Value)
             };
             AppSettings normalizedSettings;
             string error;
             if (!SettingsStore.TryNormalize(candidate, out normalizedSettings, out error))
             {
-                _errorProvider.SetError(_instrumentTextBox, error);
-                _instrumentTextBox.Focus();
-                _instrumentTextBox.SelectAll();
+                _errorProvider.SetError(_instrumentInput, error);
+                _instrumentInput.Focus();
                 return;
             }
 
             Settings = normalizedSettings;
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        private bool AddInstrument()
+        {
+            string normalizedInstrumentId;
+            string error;
+            if (!SettingsStore.TryNormalizeInstrumentId(_instrumentInput.Text, out normalizedInstrumentId, out error))
+            {
+                _errorProvider.SetError(_instrumentInput, error);
+                _instrumentInput.Focus();
+                _instrumentInput.SelectAll();
+                return false;
+            }
+
+            for (int index = default(int); index < _instrumentListBox.Items.Count; index++)
+            {
+                if (string.Equals(
+                    Convert.ToString(_instrumentListBox.Items[index]),
+                    normalizedInstrumentId,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    _instrumentListBox.SelectedIndex = index;
+                    _instrumentInput.Clear();
+                    return true;
+                }
+            }
+
+            if (_instrumentListBox.Items.Count >= SettingsStore.MaximumInstrumentCount)
+            {
+                _errorProvider.SetError(
+                    _instrumentInput,
+                    "最多可以配置 " + SettingsStore.MaximumInstrumentCount + " 个行情标的。");
+                return false;
+            }
+
+            _instrumentListBox.Items.Add(normalizedInstrumentId);
+            _instrumentListBox.SelectedIndex = _instrumentListBox.Items.Count - 1;
+            _instrumentInput.Clear();
+            _instrumentInput.Focus();
+            return true;
+        }
+
+        private void RemoveSelectedInstrument()
+        {
+            int selectedIndex = _instrumentListBox.SelectedIndex;
+            if (selectedIndex < default(int))
+            {
+                return;
+            }
+
+            _instrumentListBox.Items.RemoveAt(selectedIndex);
+            if (_instrumentListBox.Items.Count > default(int))
+            {
+                _instrumentListBox.SelectedIndex = Math.Min(selectedIndex, _instrumentListBox.Items.Count - 1);
+            }
+
+            _instrumentInput.Focus();
         }
 
         private string GetSelectedTickerPosition()
