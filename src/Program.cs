@@ -47,9 +47,9 @@ namespace StockPerpTicker
                 args.SetObserved();
             };
 
-            ConfigLoadResult config = ConfigStore.Load();
+            AppSettings settings = SettingsStore.Load();
             WindowState state = StateStore.Load();
-            using (MainForm form = new MainForm(config, state))
+            using (MainForm form = new MainForm(settings, state))
             {
                 IntPtr mainWindowHandle = form.Handle;
                 instanceCoordinator.StartListening(form.RestoreFromExternalLaunch);

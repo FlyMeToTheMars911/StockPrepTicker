@@ -10,7 +10,7 @@
 bin\Release\StockPerpTicker.exe
 ```
 
-首次启动默认显示 `RAM-USDT-SWAP`。窗口右上角按钮可以切换置顶；关闭窗口会隐藏到系统托盘，使用托盘菜单的“彻底退出”才会结束进程。
+首次启动默认显示 `RAM-USDT-SWAP`。窗口右上角可以打开设置或切换置顶；关闭窗口会隐藏到系统托盘，使用托盘菜单的“彻底退出”才会结束进程。
 
 程序采用单实例运行：再次点击任务栏图标或重复运行 EXE 不会创建新进程，而是恢复并显示已有窗口。
 
@@ -23,29 +23,18 @@ bin\Release\StockPerpTicker.exe
 
 当前 K 线周期和界面刷新频率会显示在窗口顶部的连接状态旁，例如：`实时行情 · 5分钟K线 · 1秒刷新`。
 
-## 修改行情品种
+## 行情设置
 
-使用文本编辑器打开 EXE 同目录下的 `config.json`，修改后重启程序：
+点击主窗口右上角的“设置”，可以直接调整：
 
-```json
-{
-  "instrumentId": "AAPL-USDT-SWAP",
-  "refreshIntervalMilliseconds": 1000,
-  "movingAverages": [5, 10, 20, 50],
-  "showTaskbarTickerOnMinimize": true,
-  "taskbarTickerPosition": "bottomRight"
-}
-```
+- OKX 永续合约代码
+- 界面刷新间隔（250～60000 毫秒）
+- MA5、MA10、MA20、MA50、MA100、MA200 移动平均线
+- 最小化时是否显示迷你行情条，以及行情条位于屏幕左下角或右下角
 
-配置无效或合约不可交易时，程序会在窗口中显示错误，不会静默切回 RAM。
+点击“保存并应用”后设置立即生效，不需要重启程序。切换合约前程序会先向 OKX 校验合约；如果代码不存在、合约不可交易或网络校验失败，会保留原行情并返回设置窗口。设置窗口也支持一键恢复默认值。
 
-配置项说明：
-
-- `instrumentId`：OKX 完整永续合约 ID。
-- `refreshIntervalMilliseconds`：WebSocket 最新数据合并到界面的间隔，允许 `250` 至 `60000` 毫秒；网络连接仍持续接收数据，不会因为降低界面刷新频率而断开。
-- `movingAverages`：需要显示的移动平均线周期。支持 `5、10、20、50、100、200`，分别对应 MA5、MA10、MA20、MA50、MA100、MA200；设置为 `[]` 可关闭全部均线。
-- `showTaskbarTickerOnMinimize`：设为 `true` 时，点击最小化会把主窗口隐藏到托盘并显示迷你行情条；设为 `false` 时只隐藏到托盘。
-- `taskbarTickerPosition`：迷你行情条的位置。`bottomLeft` 表示屏幕左下角，`bottomRight` 表示屏幕右下角；不填写时默认使用 `bottomRight`。配置值不合法时窗口会显示具体错误。
+设置保存在当前用户的本地数据目录，不再需要手工编辑 EXE 目录中的配置文件。升级自旧版本时，如果用户目录还没有设置，程序会自动迁移旧版 `config.json` 一次。
 
 移动平均线按照当前 K 线周期计算。例如在“1天”视图中使用 5 分钟 K 线，MA5 表示最近 5 根 5 分钟 K 线的收盘价平均；切换到“全部”后，MA5 表示最近 5 根日 K 线的收盘价平均。
 
@@ -66,6 +55,7 @@ bin\Release\StockPerpTicker.exe
 ## 本地数据
 
 - 窗口状态：`%LocalAppData%\StockPerpTicker\state.json`
+- 行情设置：`%LocalAppData%\StockPerpTicker\settings.json`
 - 日志：`%LocalAppData%\StockPerpTicker\logs\app.log`
 - 开机启动：当前用户的 Windows `Run` 注册表项，可在托盘菜单中开关
 

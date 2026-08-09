@@ -17,20 +17,20 @@ namespace StockPerpTicker
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
-        private readonly ConfigLoadResult _configResult;
-        private readonly WindowState _initialState;
+        private AppSettings _settings;
         private readonly OkxMarketClient _marketClient;
         private readonly CancellationTokenSource _applicationCancellation;
         private readonly List<Candle> _candles;
         private readonly Dictionary<string, Button> _rangeButtons;
         private readonly ChartControl _chart;
-        private readonly TaskbarTickerForm _taskbarTicker;
+        private TaskbarTickerForm _taskbarTicker;
         private readonly Label _symbolLabel;
         private readonly Label _priceLabel;
         private readonly Label _changeLabel;
         private readonly Label _statusLabel;
         private readonly Label _clockLabel;
         private readonly Button _pinButton;
+        private readonly Button _settingsButton;
         private readonly NotifyIcon _notifyIcon;
         private readonly ToolStripMenuItem _topMostMenu;
         private readonly ToolStripMenuItem _autoStartMenu;
@@ -48,19 +48,20 @@ namespace StockPerpTicker
         private MarketSnapshot _snapshot;
         private RangeDefinition _currentRange;
         private ConnectionStatus _connectionStatus;
+        private string _connectionMessage;
         private bool _allowExit;
         private bool _fallbackBusy;
         private bool _minimizePending;
         private bool _restorePending;
         private Rectangle _lastNormalBounds;
         private int _rangeGeneration;
+        private int _settingsGeneration;
         private Candle _pendingCandle;
         private Icon _appIcon;
 
-        internal MainForm(ConfigLoadResult configResult, WindowState initialState)
+        internal MainForm(AppSettings settings, WindowState initialState)
         {
-            _configResult = configResult;
-            _initialState = initialState;
+            _settings = SettingsStore.Clone(settings);
             _marketClient = new OkxMarketClient();
             _applicationCancellation = new CancellationTokenSource();
             _candles = new List<Candle>();
@@ -79,8 +80,8 @@ namespace StockPerpTicker
             Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
             _appIcon = AppIconFactory.Create();
             Icon = _appIcon;
-            _taskbarTicker = configResult.IsValid && configResult.Config.showTaskbarTickerOnMinimize
-                ? new TaskbarTickerForm(ShowFromTray, configResult.Config.TickerPosition)
+            _taskbarTicker = settings.showTaskbarTickerOnMinimize
+                ? new TaskbarTickerForm(ShowFromTray, settings.TickerPosition)
                 : null;
 
             RestoreWindowBounds(initialState);
@@ -94,7 +95,7 @@ namespace StockPerpTicker
                 Location = new Point(10, 5),
                 Size = new Size(170, 22),
                 Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
-                Text = configResult.IsValid ? configResult.Config.instrumentId : "配置错误",
+                Text = settings.instrumentId,
                 TextAlign = ContentAlignment.MiddleLeft
             };
             _priceLabel = new Label
@@ -135,16 +136,31 @@ namespace StockPerpTicker
             };
             _pinButton.FlatAppearance.BorderColor = Color.FromArgb(224, 227, 235);
             _pinButton.Click += delegate { ToggleTopMost(); };
+            _settingsButton = new Button
+            {
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                FlatStyle = FlatStyle.Flat,
+                Location = new Point(Width - 111, 7),
+                Size = new Size(42, 28),
+                Text = "设置",
+                ForeColor = SecondaryTextColor,
+                TabStop = false
+            };
+            _settingsButton.FlatAppearance.BorderColor = Color.FromArgb(224, 227, 235);
+            _settingsButton.Click += async delegate { await ShowSettingsAsync(); };
             topBar.Controls.Add(_symbolLabel);
             topBar.Controls.Add(_priceLabel);
             topBar.Controls.Add(_changeLabel);
             topBar.Controls.Add(_statusLabel);
             topBar.Controls.Add(_pinButton);
+            topBar.Controls.Add(_settingsButton);
             topBar.Resize += delegate
             {
-                _pinButton.Left = Math.Max(0, topBar.ClientSize.Width - _pinButton.Width - 8);
+                LayoutTopBar(topBar);
                 _pinButton.BringToFront();
+                _settingsButton.BringToFront();
             };
+            LayoutTopBar(topBar);
 
             _chart = new ChartControl { Dock = DockStyle.Fill };
 
@@ -207,8 +223,8 @@ namespace StockPerpTicker
             _fallbackTimer.Tick += async delegate { await RefreshFallbackAsync(); };
             _renderTimer = new System.Windows.Forms.Timer
             {
-                Interval = configResult.IsValid
-                    ? configResult.Config.refreshIntervalMilliseconds
+                Interval = settings.refreshIntervalMilliseconds > default(int)
+                    ? settings.refreshIntervalMilliseconds
                     : DefaultRenderIntervalMilliseconds
             };
             _renderTimer.Tick += delegate { ApplyPendingRealtimeCandle(); };
@@ -261,22 +277,33 @@ namespace StockPerpTicker
             return button;
         }
 
+        private void LayoutTopBar(Panel topBar)
+        {
+            _settingsButton.Left = Math.Max(0, topBar.ClientSize.Width - _settingsButton.Width - 8);
+            _pinButton.Left = Math.Max(0, _settingsButton.Left - _pinButton.Width - 6);
+            int contentRight = Math.Max(210, _pinButton.Left - 4);
+            _symbolLabel.Width = Math.Max(108, Math.Min(170, contentRight - 188));
+            _priceLabel.Left = _symbolLabel.Right + 4;
+            _changeLabel.Left = _priceLabel.Right + 4;
+            _changeLabel.Width = Math.Max(54, contentRight - _changeLabel.Left);
+            _statusLabel.Width = Math.Max(140, contentRight - _statusLabel.Left);
+        }
+
         private async Task InitializeMarketAsync()
         {
-            if (!_configResult.IsValid)
-            {
-                SetConnectionStatus(ConnectionStatus.Error, "配置错误");
-                _chart.SetMessage(_configResult.Error, true);
-                Logger.Info(_configResult.Error);
-                return;
-            }
-
+            int settingsGeneration = _settingsGeneration;
             try
             {
                 SetConnectionStatus(ConnectionStatus.Loading, "正在校验合约");
-                _instrument = await _marketClient.ValidateInstrumentAsync(
-                    _configResult.Config.instrumentId,
+                InstrumentInfo instrument = await _marketClient.ValidateInstrumentAsync(
+                    _settings.instrumentId,
                     _applicationCancellation.Token);
+                if (settingsGeneration != _settingsGeneration || _applicationCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _instrument = instrument;
                 Text = _instrument.InstrumentId + " - StockPerpTicker";
                 Logger.Info("合约校验成功：" + _instrument.InstrumentId);
                 await ChangeRangeAsync(_currentRange);
@@ -289,7 +316,7 @@ namespace StockPerpTicker
             catch (Exception ex)
             {
                 SetConnectionStatus(ConnectionStatus.Error, "行情初始化失败");
-                _chart.SetMessage(ex.Message + Environment.NewLine + "配置文件：" + _configResult.Path, true);
+                _chart.SetMessage(ex.Message + Environment.NewLine + "请点击右上角“设置”检查合约代码。", true);
                 Logger.Error("行情初始化失败", ex);
             }
         }
@@ -425,7 +452,15 @@ namespace StockPerpTicker
 
             try
             {
-                _snapshot = await _marketClient.FetchTickerAsync(_instrument.InstrumentId, _applicationCancellation.Token);
+                int settingsGeneration = _settingsGeneration;
+                InstrumentInfo instrument = _instrument;
+                MarketSnapshot snapshot = await _marketClient.FetchTickerAsync(instrument.InstrumentId, _applicationCancellation.Token);
+                if (settingsGeneration != _settingsGeneration)
+                {
+                    return;
+                }
+
+                _snapshot = snapshot;
                 UpdateHeader();
                 RenderMarket();
             }
@@ -448,10 +483,17 @@ namespace StockPerpTicker
             _fallbackBusy = true;
             try
             {
+                int settingsGeneration = _settingsGeneration;
+                InstrumentInfo instrument = _instrument;
                 Candle latest = await _marketClient.FetchLatestCandleAsync(
-                    _instrument.InstrumentId,
+                    instrument.InstrumentId,
                     _currentRange,
                     _applicationCancellation.Token);
+                if (settingsGeneration != _settingsGeneration)
+                {
+                    return;
+                }
+
                 if (latest != null)
                 {
                     MergeCandle(latest);
@@ -507,7 +549,7 @@ namespace StockPerpTicker
                     _snapshot,
                     _currentRange,
                     _instrument.TickSize,
-                    _configResult.Config.movingAverages);
+                    _settings.movingAverages);
                 if (_taskbarTicker != null)
                 {
                     _taskbarTicker.UpdateMarket(
@@ -538,6 +580,7 @@ namespace StockPerpTicker
         private void SetConnectionStatus(ConnectionStatus status, string message)
         {
             _connectionStatus = status;
+            _connectionMessage = message;
             Color color;
             switch (status)
             {
@@ -576,6 +619,128 @@ namespace StockPerpTicker
                 bool selected = string.Equals(entry.Key, _currentRange.Key, StringComparison.OrdinalIgnoreCase);
                 entry.Value.ForeColor = selected ? UpColor : Color.FromArgb(19, 23, 34);
                 entry.Value.Font = selected ? _rangeFontBold : _rangeFontRegular;
+            }
+        }
+
+        private async Task ShowSettingsAsync()
+        {
+            AppSettings editableSettings = SettingsStore.Clone(_settings);
+            while (!_applicationCancellation.IsCancellationRequested && !IsDisposed)
+            {
+                using (SettingsForm settingsForm = new SettingsForm(editableSettings))
+                {
+                    if (settingsForm.ShowDialog(this) != DialogResult.OK)
+                    {
+                        return;
+                    }
+
+                    editableSettings = settingsForm.Settings;
+                }
+
+                _settingsButton.Enabled = false;
+                bool applied;
+                try
+                {
+                    applied = await TryApplySettingsAsync(editableSettings);
+                }
+                finally
+                {
+                    if (!IsDisposed)
+                    {
+                        _settingsButton.Enabled = true;
+                    }
+                }
+
+                if (applied)
+                {
+                    return;
+                }
+            }
+        }
+
+        private async Task<bool> TryApplySettingsAsync(AppSettings candidate)
+        {
+            ConnectionStatus previousStatus = _connectionStatus;
+            string previousMessage = _connectionMessage;
+            bool instrumentChanged = _instrument == null
+                || !string.Equals(_instrument.InstrumentId, candidate.instrumentId, StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                InstrumentInfo validatedInstrument = _instrument;
+                if (instrumentChanged)
+                {
+                    SetConnectionStatus(ConnectionStatus.Loading, "正在校验 " + candidate.instrumentId);
+                    validatedInstrument = await _marketClient.ValidateInstrumentAsync(
+                        candidate.instrumentId,
+                        _applicationCancellation.Token);
+                }
+
+                SettingsStore.Save(candidate);
+                ++_settingsGeneration;
+                _settings = SettingsStore.Clone(candidate);
+                _renderTimer.Interval = _settings.refreshIntervalMilliseconds;
+                ConfigureTaskbarTicker();
+
+                if (instrumentChanged)
+                {
+                    _tickerTimer.Stop();
+                    _fallbackTimer.Stop();
+                    StopRealtimeStream();
+                    _instrument = validatedInstrument;
+                    _snapshot = null;
+                    _candles.Clear();
+                    _symbolLabel.Text = _instrument.InstrumentId;
+                    _priceLabel.Text = "--";
+                    _changeLabel.Text = "--";
+                    Text = _instrument.InstrumentId + " - StockPerpTicker";
+                    _notifyIcon.Text = "StockPerpTicker";
+                    Logger.Info("设置已保存，正在切换合约：" + _instrument.InstrumentId);
+                    await ChangeRangeAsync(_currentRange);
+                    _tickerTimer.Start();
+                    _fallbackTimer.Start();
+                }
+                else
+                {
+                    RenderMarket();
+                    SetConnectionStatus(previousStatus, previousMessage);
+                    Logger.Info("行情设置已保存并应用。");
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                return _applicationCancellation.IsCancellationRequested;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("保存或应用设置失败", ex);
+                if (!IsDisposed)
+                {
+                    SetConnectionStatus(previousStatus, previousMessage);
+                    MessageBox.Show(
+                        ex.Message,
+                        "无法应用设置",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+
+                return false;
+            }
+        }
+
+        private void ConfigureTaskbarTicker()
+        {
+            if (_taskbarTicker != null)
+            {
+                _taskbarTicker.HideTicker();
+                _taskbarTicker.Dispose();
+                _taskbarTicker = null;
+            }
+
+            if (_settings.showTaskbarTickerOnMinimize)
+            {
+                _taskbarTicker = new TaskbarTickerForm(ShowFromTray, _settings.TickerPosition);
             }
         }
 

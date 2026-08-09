@@ -10,7 +10,7 @@ using Microsoft.Win32;
 
 namespace StockPerpTicker
 {
-    internal sealed class AppConfig
+    internal sealed class AppSettings
     {
         public string instrumentId { get; set; }
         public int refreshIntervalMilliseconds { get; set; }
@@ -26,126 +26,220 @@ namespace StockPerpTicker
         BottomRight
     }
 
-    internal sealed class ConfigLoadResult
+    internal static class SettingsStore
     {
-        internal AppConfig Config { get; set; }
-        internal string Error { get; set; }
-        internal string Path { get; set; }
-
-        internal bool IsValid
-        {
-            get { return Config != null && string.IsNullOrEmpty(Error); }
-        }
-    }
-
-    internal static class ConfigStore
-    {
-        private const string ConfigFileName = "config.json";
+        private const string SettingsFileName = "settings.json";
+        private const string LegacyConfigFileName = "config.json";
         private const string SwapSuffix = "-SWAP";
-        private const int DefaultRefreshIntervalMilliseconds = 1000;
-        private const int MinimumRefreshIntervalMilliseconds = 250;
-        private const int MaximumRefreshIntervalMilliseconds = 60000;
+        internal const int DefaultRefreshIntervalMilliseconds = 1000;
+        internal const int MinimumRefreshIntervalMilliseconds = 250;
+        internal const int MaximumRefreshIntervalMilliseconds = 60000;
         private const string BottomLeftTickerPosition = "bottomLeft";
         private const string BottomRightTickerPosition = "bottomRight";
         private static readonly int[] DefaultMovingAverages = { 5, 10, 20, 50 };
         private static readonly int[] SupportedMovingAverages = { 5, 10, 20, 50, 100, 200 };
 
-        internal static ConfigLoadResult Load()
+        internal static int[] MovingAverageOptions
         {
-            string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ConfigFileName);
-            ConfigLoadResult result = new ConfigLoadResult { Path = path };
+            get { return (int[])SupportedMovingAverages.Clone(); }
+        }
+
+        internal static AppSettings Load()
+        {
+            string path = Path.Combine(StateStore.AppDataDirectory, SettingsFileName);
             try
             {
-                if (!File.Exists(path))
+                if (File.Exists(path))
                 {
-                    result.Error = "配置文件不存在：" + path;
-                    return result;
-                }
-
-                string json = File.ReadAllText(path, Encoding.UTF8);
-                JavaScriptSerializer serializer = new JavaScriptSerializer();
-                AppConfig config = serializer.Deserialize<AppConfig>(json);
-                if (config == null || string.IsNullOrWhiteSpace(config.instrumentId))
-                {
-                    result.Error = "配置项 instrumentId 不能为空。配置文件：" + path;
-                    return result;
-                }
-
-                string instrumentId = config.instrumentId.Trim().ToUpperInvariant();
-                if (!instrumentId.EndsWith(SwapSuffix, StringComparison.Ordinal))
-                {
-                    result.Error = "instrumentId 必须是完整的 OKX 永续合约 ID，例如 RAM-USDT-SWAP。配置文件：" + path;
-                    return result;
-                }
-
-                config.instrumentId = instrumentId;
-                if (config.refreshIntervalMilliseconds == default(int))
-                {
-                    config.refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds;
-                }
-
-                if (config.refreshIntervalMilliseconds < MinimumRefreshIntervalMilliseconds
-                    || config.refreshIntervalMilliseconds > MaximumRefreshIntervalMilliseconds)
-                {
-                    result.Error = "refreshIntervalMilliseconds 必须在 "
-                        + MinimumRefreshIntervalMilliseconds + " 到 " + MaximumRefreshIntervalMilliseconds
-                        + " 之间。配置文件：" + path;
-                    return result;
-                }
-
-                if (config.movingAverages == null)
-                {
-                    config.movingAverages = (int[])DefaultMovingAverages.Clone();
-                }
-
-                HashSet<int> uniqueMovingAverages = new HashSet<int>();
-                List<int> normalizedMovingAverages = new List<int>();
-                foreach (int period in config.movingAverages)
-                {
-                    if (Array.IndexOf(SupportedMovingAverages, period) < default(int))
+                    AppSettings storedSettings = Deserialize(path);
+                    AppSettings normalizedSettings;
+                    string validationError;
+                    if (TryNormalize(storedSettings, out normalizedSettings, out validationError))
                     {
-                        result.Error = "不支持 MA" + period + "。支持的移动平均线为：MA5、MA10、MA20、MA50、MA100、MA200。配置文件：" + path;
-                        return result;
+                        return normalizedSettings;
                     }
 
-                    if (uniqueMovingAverages.Add(period))
-                    {
-                        normalizedMovingAverages.Add(period);
-                    }
-                }
-
-                config.movingAverages = normalizedMovingAverages.ToArray();
-                if (string.IsNullOrWhiteSpace(config.taskbarTickerPosition))
-                {
-                    config.taskbarTickerPosition = BottomRightTickerPosition;
-                }
-
-                string tickerPosition = config.taskbarTickerPosition.Trim();
-                if (string.Equals(tickerPosition, BottomLeftTickerPosition, StringComparison.OrdinalIgnoreCase))
-                {
-                    config.taskbarTickerPosition = BottomLeftTickerPosition;
-                    config.TickerPosition = TaskbarTickerPosition.BottomLeft;
-                }
-                else if (string.Equals(tickerPosition, BottomRightTickerPosition, StringComparison.OrdinalIgnoreCase))
-                {
-                    config.taskbarTickerPosition = BottomRightTickerPosition;
-                    config.TickerPosition = TaskbarTickerPosition.BottomRight;
+                    Logger.Info("已忽略无效的用户设置：" + validationError);
                 }
                 else
                 {
-                    result.Error = "taskbarTickerPosition 仅支持 bottomLeft 或 bottomRight。配置文件：" + path;
-                    return result;
-                }
+                    AppSettings migratedSettings = TryLoadLegacySettings();
+                    if (migratedSettings != null)
+                    {
+                        try
+                        {
+                            Save(migratedSettings);
+                            Logger.Info("已将旧版 config.json 迁移到用户设置。");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error("旧版设置已载入，但暂时无法保存迁移结果", ex);
+                        }
 
-                result.Config = config;
-                return result;
+                        return migratedSettings;
+                    }
+                }
             }
             catch (Exception ex)
             {
-                result.Error = "配置文件无法解析：" + ex.Message + Environment.NewLine + path;
-                Logger.Error("读取配置失败", ex);
-                return result;
+                Logger.Error("读取用户设置失败，将使用默认设置", ex);
             }
+
+            return CreateDefault();
+        }
+
+        internal static void Save(AppSettings settings)
+        {
+            AppSettings normalizedSettings;
+            string validationError;
+            if (!TryNormalize(settings, out normalizedSettings, out validationError))
+            {
+                throw new ArgumentException(validationError, "settings");
+            }
+
+            Directory.CreateDirectory(StateStore.AppDataDirectory);
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            string path = Path.Combine(StateStore.AppDataDirectory, SettingsFileName);
+            File.WriteAllText(path, serializer.Serialize(normalizedSettings), new UTF8Encoding(false));
+        }
+
+        internal static AppSettings CreateDefault()
+        {
+            return new AppSettings
+            {
+                instrumentId = "RAM-USDT-SWAP",
+                refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds,
+                movingAverages = (int[])DefaultMovingAverages.Clone(),
+                showTaskbarTickerOnMinimize = true,
+                taskbarTickerPosition = BottomRightTickerPosition,
+                TickerPosition = TaskbarTickerPosition.BottomRight
+            };
+        }
+
+        internal static AppSettings Clone(AppSettings settings)
+        {
+            return new AppSettings
+            {
+                instrumentId = settings.instrumentId,
+                refreshIntervalMilliseconds = settings.refreshIntervalMilliseconds,
+                movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
+                showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
+                taskbarTickerPosition = settings.taskbarTickerPosition,
+                TickerPosition = settings.TickerPosition
+            };
+        }
+
+        internal static bool TryNormalize(AppSettings settings, out AppSettings normalizedSettings, out string error)
+        {
+            normalizedSettings = null;
+            error = null;
+            if (settings == null || string.IsNullOrWhiteSpace(settings.instrumentId))
+            {
+                error = "请输入 OKX 永续合约代码。";
+                return false;
+            }
+
+            string instrumentId = settings.instrumentId.Trim().ToUpperInvariant();
+            if (!instrumentId.EndsWith(SwapSuffix, StringComparison.Ordinal))
+            {
+                error = "合约代码必须是完整的 OKX 永续合约 ID，例如 RAM-USDT-SWAP。";
+                return false;
+            }
+
+            int refreshInterval = settings.refreshIntervalMilliseconds == default(int)
+                ? DefaultRefreshIntervalMilliseconds
+                : settings.refreshIntervalMilliseconds;
+            if (refreshInterval < MinimumRefreshIntervalMilliseconds
+                || refreshInterval > MaximumRefreshIntervalMilliseconds)
+            {
+                error = "界面刷新间隔必须在 " + MinimumRefreshIntervalMilliseconds
+                    + " 到 " + MaximumRefreshIntervalMilliseconds + " 毫秒之间。";
+                return false;
+            }
+
+            int[] movingAverages = settings.movingAverages == null
+                ? (int[])DefaultMovingAverages.Clone()
+                : settings.movingAverages;
+            HashSet<int> selectedMovingAverages = new HashSet<int>(movingAverages);
+            foreach (int period in movingAverages)
+            {
+                if (Array.IndexOf(SupportedMovingAverages, period) < default(int))
+                {
+                    error = "不支持 MA" + period + "。请选择设置窗口中提供的移动平均线。";
+                    return false;
+                }
+            }
+
+            List<int> normalizedMovingAverages = new List<int>();
+            foreach (int period in SupportedMovingAverages)
+            {
+                if (selectedMovingAverages.Contains(period))
+                {
+                    normalizedMovingAverages.Add(period);
+                }
+            }
+
+            string tickerPosition = string.IsNullOrWhiteSpace(settings.taskbarTickerPosition)
+                ? BottomRightTickerPosition
+                : settings.taskbarTickerPosition.Trim();
+            TaskbarTickerPosition normalizedTickerPosition;
+            if (string.Equals(tickerPosition, BottomLeftTickerPosition, StringComparison.OrdinalIgnoreCase))
+            {
+                tickerPosition = BottomLeftTickerPosition;
+                normalizedTickerPosition = TaskbarTickerPosition.BottomLeft;
+            }
+            else if (string.Equals(tickerPosition, BottomRightTickerPosition, StringComparison.OrdinalIgnoreCase))
+            {
+                tickerPosition = BottomRightTickerPosition;
+                normalizedTickerPosition = TaskbarTickerPosition.BottomRight;
+            }
+            else
+            {
+                error = "迷你行情条位置无效。";
+                return false;
+            }
+
+            normalizedSettings = new AppSettings
+            {
+                instrumentId = instrumentId,
+                refreshIntervalMilliseconds = refreshInterval,
+                movingAverages = normalizedMovingAverages.ToArray(),
+                showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
+                taskbarTickerPosition = tickerPosition,
+                TickerPosition = normalizedTickerPosition
+            };
+            return true;
+        }
+
+        private static AppSettings TryLoadLegacySettings()
+        {
+            string legacyPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, LegacyConfigFileName);
+            if (!File.Exists(legacyPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                AppSettings legacySettings = Deserialize(legacyPath);
+                AppSettings normalizedSettings;
+                string validationError;
+                return TryNormalize(legacySettings, out normalizedSettings, out validationError)
+                    ? normalizedSettings
+                    : null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("迁移旧版 config.json 失败", ex);
+                return null;
+            }
+        }
+
+        private static AppSettings Deserialize(string path)
+        {
+            string json = File.ReadAllText(path, Encoding.UTF8);
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            return serializer.Deserialize<AppSettings>(json);
         }
     }
 

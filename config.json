@@ -1,7 +1,0 @@
-{
-  "instrumentId": "RAM-USDT-SWAP",
-  "refreshIntervalMilliseconds": 1000,
-  "movingAverages": [5, 10, 20, 50],
-  "showTaskbarTickerOnMinimize": true,
-  "taskbarTickerPosition": "bottomRight"
-}

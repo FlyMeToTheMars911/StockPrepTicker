@@ -20,6 +20,7 @@
     <Compile Include="src\OkxMarketClient.cs" />
     <Compile Include="src\ChartControl.cs" />
     <Compile Include="src\TaskbarTickerForm.cs" />
+    <Compile Include="src\SettingsForm.cs" />
     <Compile Include="src\MainForm.cs" />
   </ItemGroup>
 
@@ -49,8 +50,7 @@
          NoConfig="true"
          NoStandardLib="true"
          Win32Icon="$(MSBuildProjectDirectory)\assets\StockPerpTicker.ico"
-         Win32Manifest="$(MSBuildProjectDirectory)\app.manifest" />
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\config.json" DestinationFolder="$(OutputPath)" />
+         Win32Manifest="$(MSBuildProjectDirectory)\app.manifest.xml" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\app.config" DestinationFiles="$(OutputPath)\$(AssemblyName).exe.config" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\README.md" DestinationFolder="$(OutputPath)" />
   </Target>

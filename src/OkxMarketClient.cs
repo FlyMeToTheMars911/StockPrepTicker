@@ -38,7 +38,7 @@ namespace StockPerpTicker
             InstrumentInfo instrument = JsonParser.ParseInstrument(json);
             if (instrument == null)
             {
-                throw new InvalidOperationException("OKX 未找到合约 " + instrumentId + "。请检查 config.json。 ");
+                throw new InvalidOperationException("OKX 未找到合约 " + instrumentId + "。请检查设置中的合约代码。");
             }
 
             const string LiveState = "live";
