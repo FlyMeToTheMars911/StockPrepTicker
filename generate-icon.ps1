@@ -88,4 +88,4 @@ foreach ($image in $images) {
 
 $writer.Dispose()
 $fileStream.Dispose()
-Write-Host "图标已生成：$OutputPath"
+Write-Host "Icon generated: $OutputPath"

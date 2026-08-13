@@ -60,8 +60,11 @@ namespace StockPerpTicker
         private bool _fallbackBusy;
         private bool _minimizePending;
         private bool _restorePending;
+        private bool _windowRestoreInProgress;
+        private bool _normalBoundsCapturePending;
         private bool _miniTickerBusy;
         private Rectangle _lastNormalBounds;
+        private FormWindowState _windowStateBeforeMinimize;
         private int _rangeGeneration;
         private int _settingsGeneration;
         private int _miniTickerIndex;
@@ -100,6 +103,7 @@ namespace StockPerpTicker
 
             RestoreWindowBounds(initialState);
             _lastNormalBounds = Bounds;
+            _windowStateBeforeMinimize = FormWindowState.Normal;
             TopMost = initialState.TopMost;
 
             Panel topBar = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.White, Padding = new Padding(10, 6, 8, 4) };
@@ -292,8 +296,8 @@ namespace StockPerpTicker
 
             Shown += async delegate { await InitializeMarketAsync(); };
             Resize += HandleMainResize;
-            LocationChanged += CaptureNormalWindowBounds;
-            SizeChanged += CaptureNormalWindowBounds;
+            LocationChanged += QueueNormalWindowBoundsCapture;
+            SizeChanged += QueueNormalWindowBoundsCapture;
             FormClosing += HandleFormClosing;
             FormClosed += HandleFormClosed;
             UpdateRangeButtons();
@@ -555,6 +559,7 @@ namespace StockPerpTicker
         {
             int generation = ++_rangeGeneration;
             StopRealtimeStream();
+            _chart.ResetViewport();
             lock (_pendingCandleSync)
             {
                 _pendingCandle = null;
@@ -1176,6 +1181,9 @@ namespace StockPerpTicker
 
         private void RestoreMainWindowCore()
         {
+            FormWindowState restoreState = _windowStateBeforeMinimize == FormWindowState.Maximized
+                ? FormWindowState.Maximized
+                : FormWindowState.Normal;
             try
             {
                 if (IsDisposed || Disposing)
@@ -1184,19 +1192,27 @@ namespace StockPerpTicker
                 }
 
                 Rectangle targetBounds = NormalizeWindowBounds(_lastNormalBounds);
-                WindowState = FormWindowState.Normal;
-                Bounds = targetBounds;
+                _windowRestoreInProgress = true;
                 Show();
-                WindowActivation.RestoreAndActivate(Handle, targetBounds);
-                Bounds = targetBounds;
+                WindowActivation.RestoreAndActivate(
+                    Handle,
+                    targetBounds,
+                    restoreState == FormWindowState.Maximized);
                 _lastNormalBounds = targetBounds;
                 BringToFront();
                 Activate();
+                PerformLayout();
                 Update();
                 HideTaskbarTicker();
 
                 Logger.Info(string.Format(
-                    "主窗口已从托盘或迷你行情条恢复，位置：{0},{1}，尺寸：{2}x{3}。",
+                    "主窗口已从托盘或迷你行情条恢复，目标状态：{0}，实际状态：{1}，实际边界：{2},{3},{4}x{5}，正常边界：{6},{7},{8}x{9}。",
+                    restoreState,
+                    WindowState,
+                    Bounds.Left,
+                    Bounds.Top,
+                    Bounds.Width,
+                    Bounds.Height,
                     targetBounds.Left,
                     targetBounds.Top,
                     targetBounds.Width,
@@ -1204,13 +1220,26 @@ namespace StockPerpTicker
             }
             finally
             {
+                _windowStateBeforeMinimize = restoreState;
+                _windowRestoreInProgress = false;
                 _restorePending = false;
             }
         }
 
         private void HandleMainResize(object sender, EventArgs args)
         {
-            if (WindowState != FormWindowState.Minimized || !Visible || _minimizePending)
+            if (_windowRestoreInProgress)
+            {
+                return;
+            }
+
+            if (WindowState != FormWindowState.Minimized)
+            {
+                _windowStateBeforeMinimize = WindowState;
+                return;
+            }
+
+            if (!Visible || _minimizePending)
             {
                 return;
             }
@@ -1224,7 +1253,7 @@ namespace StockPerpTicker
                     return;
                 }
 
-                Rectangle referenceBounds = NormalizeWindowBounds(_lastNormalBounds);
+                Rectangle referenceBounds = ResolveNormalWindowBounds();
                 _lastNormalBounds = referenceBounds;
                 SaveWindowState();
                 Hide();
@@ -1234,9 +1263,15 @@ namespace StockPerpTicker
                     StartMiniTickerRotation();
                 }
 
-                Logger.Info(_taskbarTicker == null
-                    ? "窗口已最小化到托盘。"
-                    : "窗口已最小化到托盘并显示迷你行情条。");
+                Logger.Info(string.Format(
+                    _taskbarTicker == null
+                        ? "窗口已最小化到托盘，最小化前状态：{0}，正常位置：{1},{2}，正常尺寸：{3}x{4}。"
+                        : "窗口已最小化到托盘并显示迷你行情条，最小化前状态：{0}，正常位置：{1},{2}，正常尺寸：{3}x{4}。",
+                    _windowStateBeforeMinimize,
+                    referenceBounds.Left,
+                    referenceBounds.Top,
+                    referenceBounds.Width,
+                    referenceBounds.Height));
             }));
         }
 
@@ -1279,9 +1314,7 @@ namespace StockPerpTicker
 
         private void SaveWindowState()
         {
-            Rectangle bounds = WindowState == FormWindowState.Normal && IsWindowBoundsVisible(Bounds)
-                ? NormalizeWindowBounds(Bounds)
-                : NormalizeWindowBounds(_lastNormalBounds);
+            Rectangle bounds = ResolveNormalWindowBounds();
             _lastNormalBounds = bounds;
             StateStore.Save(new WindowState
             {
@@ -1314,12 +1347,57 @@ namespace StockPerpTicker
             Bounds = NormalizeWindowBounds(requested);
         }
 
-        private void CaptureNormalWindowBounds(object sender, EventArgs args)
+        private void QueueNormalWindowBoundsCapture(object sender, EventArgs args)
+        {
+            if (_windowRestoreInProgress || _normalBoundsCapturePending || IsDisposed || Disposing)
+            {
+                return;
+            }
+
+            _normalBoundsCapturePending = true;
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    _normalBoundsCapturePending = false;
+                    CaptureNormalWindowBounds();
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                _normalBoundsCapturePending = false;
+            }
+        }
+
+        private void CaptureNormalWindowBounds()
+        {
+            if (_windowRestoreInProgress || WindowState != FormWindowState.Normal)
+            {
+                return;
+            }
+
+            if (IsWindowBoundsVisible(Bounds))
+            {
+                _lastNormalBounds = NormalizeWindowBounds(Bounds);
+            }
+        }
+
+        private Rectangle ResolveNormalWindowBounds()
         {
             if (WindowState == FormWindowState.Normal && IsWindowBoundsVisible(Bounds))
             {
-                _lastNormalBounds = Bounds;
+                return NormalizeWindowBounds(Bounds);
             }
+
+            Rectangle restoreBounds = RestoreBounds;
+            if (restoreBounds.Width >= MinimumSize.Width
+                && restoreBounds.Height >= MinimumSize.Height
+                && IsWindowBoundsVisible(restoreBounds))
+            {
+                return NormalizeWindowBounds(restoreBounds);
+            }
+
+            return NormalizeWindowBounds(_lastNormalBounds);
         }
 
         private Rectangle NormalizeWindowBounds(Rectangle requested)

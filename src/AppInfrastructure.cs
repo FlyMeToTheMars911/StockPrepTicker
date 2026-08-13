@@ -614,7 +614,8 @@ namespace StockPerpTicker
 
     internal static class WindowActivation
     {
-        private const int RestoreWindowCommand = 9;
+        private const int MaximizeWindowCommand = 3;
+        private const int ShowNormalWindowCommand = 1;
         private const uint ShowWindowPositionFlag = 0x0040;
         private static readonly IntPtr TopWindow = IntPtr.Zero;
 
@@ -634,17 +635,22 @@ namespace StockPerpTicker
             int height,
             uint flags);
 
-        internal static void RestoreAndActivate(IntPtr windowHandle, Rectangle bounds)
+        internal static void RestoreAndActivate(IntPtr windowHandle, Rectangle normalBounds, bool maximize)
         {
-            ShowWindow(windowHandle, RestoreWindowCommand);
+            ShowWindow(windowHandle, ShowNormalWindowCommand);
             SetWindowPos(
                 windowHandle,
                 TopWindow,
-                bounds.Left,
-                bounds.Top,
-                bounds.Width,
-                bounds.Height,
+                normalBounds.Left,
+                normalBounds.Top,
+                normalBounds.Width,
+                normalBounds.Height,
                 ShowWindowPositionFlag);
+            if (maximize)
+            {
+                ShowWindow(windowHandle, MaximizeWindowCommand);
+            }
+
             SetForegroundWindow(windowHandle);
         }
     }
