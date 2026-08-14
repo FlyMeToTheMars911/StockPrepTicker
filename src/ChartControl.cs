@@ -24,9 +24,10 @@ namespace StockPerpTicker
         private const float ZoomStep = 0.80f;
         private const int CrosshairTimeLabelHorizontalPadding = 6;
         private const int CrosshairLabelHeight = 20;
-        private const string OneDayRangeKey = "1D";
-        private const string FiveDayRangeKey = "5D";
-        private const string AllRangeKey = "ALL";
+        private const long OneDayMinutes = 1440L;
+        private const long FiveDayMinutes = 7200L;
+        private const long OneYearMinutes = 525600L;
+        private const long OneMonthPeriodMinutes = 43200L;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
@@ -718,11 +719,28 @@ namespace StockPerpTicker
                         (int)Math.Round((visibleCount - 1) * index / (float)Labels));
                     float x = plotArea.Left + plotArea.Width * index / (float)Labels;
                     DateTime time = _candles[candleIndex].LocalTime;
-                    string label = _range.Key == OneDayRangeKey
-                        ? time.ToString("HH:mm", CultureInfo.InvariantCulture)
-                        : (_range.Key == FiveDayRangeKey
-                            ? time.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)
-                            : time.ToString("MM-dd", CultureInfo.InvariantCulture));
+                    string label;
+                    if (_range.PeriodDurationMinutes >= OneMonthPeriodMinutes)
+                    {
+                        label = time.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+                    }
+                    else if (_range.IsAllHistory || _range.DurationMinutes > OneYearMinutes)
+                    {
+                        label = time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    }
+                    else if (_range.DurationMinutes <= OneDayMinutes)
+                    {
+                        label = time.ToString("HH:mm", CultureInfo.InvariantCulture);
+                    }
+                    else if (_range.DurationMinutes <= FiveDayMinutes)
+                    {
+                        label = time.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture);
+                    }
+                    else
+                    {
+                        label = time.ToString("MM-dd", CultureInfo.InvariantCulture);
+                    }
+
                     graphics.DrawString(label, _axisFont, brush, new RectangleF(x - 38, plotArea.Bottom + 4, 76, 20), centerFormat);
                 }
             }
@@ -818,8 +836,18 @@ namespace StockPerpTicker
 
         private string FormatCrosshairTime(DateTime time)
         {
-            return _range.Key == AllRangeKey
-                ? time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            if (_range.PeriodDurationMinutes >= OneMonthPeriodMinutes)
+            {
+                return time.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+            }
+
+            if (_range.PeriodDurationMinutes >= OneDayMinutes)
+            {
+                return time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            }
+
+            return _range.IsAllHistory || _range.DurationMinutes > OneYearMinutes
+                ? time.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)
                 : time.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture);
         }
 

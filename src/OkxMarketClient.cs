@@ -19,6 +19,7 @@ namespace StockPerpTicker
         private const int HeartbeatCheckSeconds = 15;
         private const int HeartbeatIdleSeconds = 20;
         private const int HeartbeatFailureSeconds = 12;
+        private const int MaximumCandlesPerRequest = 300;
         private const int EmptyItemCount = 0;
         private const int NoReconnectDelay = 0;
         private const long UnknownListingTime = 0L;
@@ -57,35 +58,38 @@ namespace StockPerpTicker
             CancellationToken cancellationToken)
         {
             Dictionary<long, Candle> unique = new Dictionary<long, Candle>();
-            int firstLimit = Math.Min(300, range.MaximumPoints);
+            int firstLimit = Math.Min(MaximumCandlesPerRequest, range.MaximumPoints);
             string currentPath = BuildCandlePath("/api/v5/market/candles", instrumentId, range.RestBar, firstLimit, null);
-            AddCandles(unique, JsonParser.ParseCandles(await GetStringAsync(currentPath, cancellationToken).ConfigureAwait(false)));
+            List<Candle> firstPage = JsonParser.ParseCandles(
+                await GetStringAsync(currentPath, cancellationToken).ConfigureAwait(false));
+            long oldest = AddCandles(unique, firstPage);
+            int pageCount = 1;
 
-            if (range.IsAllHistory)
+            while (unique.Count < range.MaximumPoints && unique.Count > EmptyItemCount)
             {
-                while (unique.Count < range.MaximumPoints && unique.Count > EmptyItemCount)
+                if (listingTime > UnknownListingTime && oldest <= listingTime)
                 {
-                    long oldest = unique.Keys.Min();
-                    if (listingTime > UnknownListingTime && oldest <= listingTime)
-                    {
-                        break;
-                    }
-
-                    int remaining = Math.Min(300, range.MaximumPoints - unique.Count);
-                    string historyPath = BuildCandlePath(
-                        "/api/v5/market/history-candles",
-                        instrumentId,
-                        range.RestBar,
-                        remaining,
-                        oldest);
-                    List<Candle> page = JsonParser.ParseCandles(await GetStringAsync(historyPath, cancellationToken).ConfigureAwait(false));
-                    int countBefore = unique.Count;
-                    AddCandles(unique, page);
-                    if (page.Count == EmptyItemCount || unique.Count == countBefore)
-                    {
-                        break;
-                    }
+                    break;
                 }
+
+                int remaining = Math.Min(MaximumCandlesPerRequest, range.MaximumPoints - unique.Count);
+                string historyPath = BuildCandlePath(
+                    "/api/v5/market/history-candles",
+                    instrumentId,
+                    range.RestBar,
+                    remaining,
+                    oldest);
+                List<Candle> page = JsonParser.ParseCandles(
+                    await GetStringAsync(historyPath, cancellationToken).ConfigureAwait(false));
+                int countBefore = unique.Count;
+                long pageOldest = AddCandles(unique, page);
+                pageCount++;
+                if (page.Count == EmptyItemCount || unique.Count == countBefore)
+                {
+                    break;
+                }
+
+                oldest = Math.Min(oldest, pageOldest);
             }
 
             List<Candle> result = unique.Values.OrderBy(item => item.Timestamp).ToList();
@@ -93,6 +97,10 @@ namespace StockPerpTicker
             {
                 result = result.Skip(result.Count - range.MaximumPoints).ToList();
             }
+
+            Logger.Info(
+                "K 线历史请求完成：" + instrumentId + " / " + range.RestBar + " / " + pageCount
+                + " 页 / " + result.Count + " 根");
 
             return result;
         }
@@ -325,12 +333,16 @@ namespace StockPerpTicker
             return path.ToString();
         }
 
-        private static void AddCandles(Dictionary<long, Candle> destination, IEnumerable<Candle> candles)
+        private static long AddCandles(Dictionary<long, Candle> destination, IEnumerable<Candle> candles)
         {
+            long oldest = long.MaxValue;
             foreach (Candle candle in candles)
             {
                 destination[candle.Timestamp] = candle;
+                oldest = Math.Min(oldest, candle.Timestamp);
             }
+
+            return oldest;
         }
 
         private static async Task SendTextAsync(ClientWebSocket socket, string message, CancellationToken cancellationToken)

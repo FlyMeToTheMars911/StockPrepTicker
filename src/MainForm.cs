@@ -11,6 +11,7 @@ namespace StockPerpTicker
     internal sealed class MainForm : Form
     {
         private const int MissingCandleIndex = -1;
+        private const string ChartConfigurationErrorTitle = "K 线配置不可用";
         private const int DefaultRenderIntervalMilliseconds = 1000;
         private const int UnspecifiedWindowCoordinate = -1;
         private const int MinimumVisibleWindowOverlap = 100;
@@ -22,7 +23,6 @@ namespace StockPerpTicker
         private readonly OkxMarketClient _marketClient;
         private readonly CancellationTokenSource _applicationCancellation;
         private readonly List<Candle> _candles;
-        private readonly Dictionary<string, Button> _rangeButtons;
         private readonly Dictionary<string, Button> _instrumentButtons;
         private readonly Dictionary<string, InstrumentInfo> _instrumentInfos;
         private readonly Dictionary<string, List<Candle>> _miniTickerCandles;
@@ -35,6 +35,8 @@ namespace StockPerpTicker
         private readonly Label _changeLabel;
         private readonly Label _statusLabel;
         private readonly Label _clockLabel;
+        private readonly ComboBox _rangeComboBox;
+        private readonly ComboBox _periodComboBox;
         private readonly Button _pinButton;
         private readonly Button _settingsButton;
         private readonly NotifyIcon _notifyIcon;
@@ -50,6 +52,7 @@ namespace StockPerpTicker
         private readonly Font _rangeFontBold;
         private readonly object _pendingCandleSync;
         private CancellationTokenSource _streamCancellation;
+        private CancellationTokenSource _rangeLoadCancellation;
         private Task _streamTask;
         private InstrumentInfo _instrument;
         private MarketSnapshot _snapshot;
@@ -63,6 +66,8 @@ namespace StockPerpTicker
         private bool _windowRestoreInProgress;
         private bool _normalBoundsCapturePending;
         private bool _miniTickerBusy;
+        private bool _rangeSelectionReady;
+        private bool _periodSelectionReady;
         private Rectangle _lastNormalBounds;
         private FormWindowState _windowStateBeforeMinimize;
         private int _rangeGeneration;
@@ -78,12 +83,13 @@ namespace StockPerpTicker
             _marketClient = new OkxMarketClient();
             _applicationCancellation = new CancellationTokenSource();
             _candles = new List<Candle>();
-            _rangeButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
             _instrumentButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
             _instrumentInfos = new Dictionary<string, InstrumentInfo>(StringComparer.OrdinalIgnoreCase);
             _miniTickerCandles = new Dictionary<string, List<Candle>>(StringComparer.OrdinalIgnoreCase);
             _pendingCandleSync = new object();
-            _currentRange = RangeDefinition.Find(initialState.RangeKey);
+            _currentRange = RangeDefinition.Create(_settings.timeRange, _settings.candlePeriod);
+            _settings.timeRange = _currentRange.Key;
+            _settings.candlePeriod = _currentRange.SelectedPeriodKey;
             _selectedInstrumentId = ResolveInitialInstrumentId(initialState.InstrumentId, _settings.instrumentIds);
             _rangeFontRegular = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
             _rangeFontBold = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
@@ -205,14 +211,53 @@ namespace StockPerpTicker
                 Visible = false
             };
 
-            int buttonLeft = 8;
+            rangeBar.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Location = new Point(8, 14),
+                Text = "范围"
+            });
+            _rangeComboBox = new ComboBox
+            {
+                Location = new Point(42, 9),
+                Size = new Size(80, 25),
+                DropDownWidth = 104,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                TabStop = false
+            };
             foreach (RangeDefinition range in RangeDefinition.All)
             {
-                Button button = CreateRangeButton(range, buttonLeft);
-                buttonLeft += range.Key == "1M" ? 63 : 47;
-                rangeBar.Controls.Add(button);
-                _rangeButtons[range.Key] = button;
+                _rangeComboBox.Items.Add(range);
             }
+
+            SelectTimeRange(_currentRange.Key);
+            _rangeComboBox.SelectedIndexChanged += async delegate { await ChangeTimeRangeFromSelectionAsync(); };
+            _rangeSelectionReady = true;
+            rangeBar.Controls.Add(_rangeComboBox);
+
+            rangeBar.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Location = new Point(128, 14),
+                Text = "周期"
+            });
+            _periodComboBox = new ComboBox
+            {
+                Location = new Point(162, 9),
+                Size = new Size(88, 25),
+                DropDownWidth = 120,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                TabStop = false
+            };
+            foreach (CandlePeriodDefinition period in CandlePeriodDefinition.All)
+            {
+                _periodComboBox.Items.Add(period);
+            }
+
+            SelectPeriod(_currentRange.SelectedPeriodKey);
+            _periodComboBox.SelectedIndexChanged += async delegate { await ChangeCandlePeriodAsync(); };
+            _periodSelectionReady = true;
+            rangeBar.Controls.Add(_periodComboBox);
 
             _clockLabel = new Label
             {
@@ -300,29 +345,135 @@ namespace StockPerpTicker
             SizeChanged += QueueNormalWindowBoundsCapture;
             FormClosing += HandleFormClosing;
             FormClosed += HandleFormClosed;
-            UpdateRangeButtons();
         }
 
-        private Button CreateRangeButton(RangeDefinition range, int left)
+        private async Task ChangeTimeRangeFromSelectionAsync()
         {
-            Button button = new Button
+            if (!_rangeSelectionReady)
             {
-                FlatStyle = FlatStyle.Flat,
-                Location = new Point(left, 7),
-                Size = new Size(range.Key == "1M" ? 58 : 42, 28),
-                Text = range.Label,
-                Tag = range,
-                TabStop = false
-            };
-            button.FlatAppearance.BorderSize = 0;
-            button.Click += async delegate
+                return;
+            }
+
+            RangeDefinition selectedRange = _rangeComboBox.SelectedItem as RangeDefinition;
+            if (selectedRange == null
+                || string.Equals(selectedRange.Key, _currentRange.Key, StringComparison.OrdinalIgnoreCase))
             {
-                if (_instrument != null && !ReferenceEquals(_currentRange, range))
+                return;
+            }
+
+            await ChangeTimeRangeAsync(selectedRange.Key);
+        }
+
+        private async Task ChangeTimeRangeAsync(string rangeKey)
+        {
+            RangeDefinition range;
+            string error;
+            if (!RangeDefinition.TryCreate(rangeKey, _currentRange.SelectedPeriodKey, out range, out error))
+            {
+                SelectTimeRange(_currentRange.Key);
+                MessageBox.Show(
+                    this,
+                    error,
+                    ChartConfigurationErrorTitle,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            if (_instrument == null)
+            {
+                _currentRange = range;
+                _settings.timeRange = range.Key;
+                return;
+            }
+
+            await ChangeRangeAsync(range, true);
+        }
+
+        private async Task ChangeCandlePeriodAsync()
+        {
+            if (!_periodSelectionReady)
+            {
+                return;
+            }
+
+            CandlePeriodDefinition period = _periodComboBox.SelectedItem as CandlePeriodDefinition;
+            if (period == null
+                || string.Equals(period.Key, _currentRange.SelectedPeriodKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            RangeDefinition range;
+            string error;
+            if (!RangeDefinition.TryCreate(_currentRange.Key, period.Key, out range, out error))
+            {
+                SelectPeriod(_currentRange.SelectedPeriodKey);
+                MessageBox.Show(
+                    this,
+                    error,
+                    ChartConfigurationErrorTitle,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            if (_instrument == null)
+            {
+                _currentRange = range;
+                _settings.candlePeriod = range.SelectedPeriodKey;
+                return;
+            }
+
+            await ChangeRangeAsync(range, true);
+        }
+
+        private void SelectTimeRange(string rangeKey)
+        {
+            bool selectionWasReady = _rangeSelectionReady;
+            _rangeSelectionReady = false;
+            try
+            {
+                for (int index = default(int); index < _rangeComboBox.Items.Count; index++)
                 {
-                    await ChangeRangeAsync(range);
+                    RangeDefinition range = _rangeComboBox.Items[index] as RangeDefinition;
+                    if (range != null && string.Equals(range.Key, rangeKey, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _rangeComboBox.SelectedIndex = index;
+                        return;
+                    }
                 }
-            };
-            return button;
+
+                _rangeComboBox.SelectedIndex = default(int);
+            }
+            finally
+            {
+                _rangeSelectionReady = selectionWasReady;
+            }
+        }
+
+        private void SelectPeriod(string periodKey)
+        {
+            bool selectionWasReady = _periodSelectionReady;
+            _periodSelectionReady = false;
+            try
+            {
+                for (int index = default(int); index < _periodComboBox.Items.Count; index++)
+                {
+                    CandlePeriodDefinition period = _periodComboBox.Items[index] as CandlePeriodDefinition;
+                    if (period != null && string.Equals(period.Key, periodKey, StringComparison.Ordinal))
+                    {
+                        _periodComboBox.SelectedIndex = index;
+                        return;
+                    }
+                }
+
+                _periodComboBox.SelectedIndex = default(int);
+            }
+            finally
+            {
+                _periodSelectionReady = selectionWasReady;
+            }
         }
 
         private void LayoutTopBar(Panel topBar)
@@ -546,7 +697,7 @@ namespace StockPerpTicker
             Text = instrument.InstrumentId + " - StockPerpTicker";
             _notifyIcon.Text = "StockPerpTicker";
             UpdateInstrumentSelection();
-            await ChangeRangeAsync(_currentRange);
+            await ChangeRangeAsync(_currentRange, false);
             _tickerTimer.Start();
             _fallbackTimer.Start();
             if (saveState)
@@ -555,9 +706,14 @@ namespace StockPerpTicker
             }
         }
 
-        private async Task ChangeRangeAsync(RangeDefinition range)
+        private async Task ChangeRangeAsync(RangeDefinition range, bool persistConfiguration)
         {
             int generation = ++_rangeGeneration;
+            CancelRangeLoad();
+            CancellationTokenSource loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                _applicationCancellation.Token);
+            _rangeLoadCancellation = loadCancellation;
+            CancellationToken loadToken = loadCancellation.Token;
             StopRealtimeStream();
             _chart.ResetViewport();
             lock (_pendingCandleSync)
@@ -566,7 +722,18 @@ namespace StockPerpTicker
             }
 
             _currentRange = range;
-            UpdateRangeButtons();
+            _settings.timeRange = range.Key;
+            _settings.candlePeriod = range.SelectedPeriodKey;
+            SelectTimeRange(range.Key);
+            SelectPeriod(range.SelectedPeriodKey);
+            if (persistConfiguration)
+            {
+                PersistChartConfiguration();
+            }
+
+            Logger.Info(
+                "开始加载 K 线：" + _instrument.InstrumentId + " / " + range.Key + " / " + range.RestBar
+                + " / 最多 " + range.MaximumPoints + " 根");
             SetConnectionStatus(ConnectionStatus.Loading, "正在加载 " + range.Label + " 数据");
             _chart.SetMessage("正在加载 " + range.Label + " K 线…", false);
 
@@ -576,10 +743,10 @@ namespace StockPerpTicker
                     _instrument.InstrumentId,
                     range,
                     _instrument.ListingTime,
-                    _applicationCancellation.Token);
+                    loadToken);
                 MarketSnapshot snapshot = await _marketClient.FetchTickerAsync(
                     _instrument.InstrumentId,
-                    _applicationCancellation.Token);
+                    loadToken);
                 if (generation != _rangeGeneration || _applicationCancellation.IsCancellationRequested)
                 {
                     return;
@@ -590,6 +757,9 @@ namespace StockPerpTicker
                 _snapshot = snapshot;
                 RenderMarket();
                 UpdateHeader();
+                Logger.Info(
+                    "K 线加载完成：" + _instrument.InstrumentId + " / " + range.Key + " / " + range.RestBar
+                    + " / " + history.Count + " 根");
                 StartRealtimeStream(range);
             }
             catch (OperationCanceledException)
@@ -597,10 +767,39 @@ namespace StockPerpTicker
             }
             catch (Exception ex)
             {
+                if (generation != _rangeGeneration || _applicationCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 SetConnectionStatus(ConnectionStatus.Error, "K 线加载失败");
                 _chart.SetMessage(ex.Message, true);
                 Logger.Error("加载 K 线失败：" + range.Key, ex);
                 StartRealtimeStream(range);
+            }
+            finally
+            {
+                if (ReferenceEquals(_rangeLoadCancellation, loadCancellation))
+                {
+                    _rangeLoadCancellation = null;
+                }
+
+                loadCancellation.Dispose();
+            }
+        }
+
+        private void PersistChartConfiguration()
+        {
+            try
+            {
+                SettingsStore.Save(_settings);
+                SaveWindowState();
+                Logger.Info(
+                    "K 线配置已保存：范围 " + _settings.timeRange + " / 周期 " + _settings.candlePeriod);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("保存 K 线配置失败", ex);
             }
         }
 
@@ -758,21 +957,66 @@ namespace StockPerpTicker
 
         private void MergeCandle(Candle candle)
         {
-            int existing = _candles.FindIndex(item => item.Timestamp == candle.Timestamp);
-            if (existing > MissingCandleIndex)
+            int candleIndex = FindCandleIndex(candle.Timestamp);
+            if (candleIndex > MissingCandleIndex)
             {
-                _candles[existing] = candle;
+                _candles[candleIndex] = candle;
             }
             else
             {
-                _candles.Add(candle);
-                _candles.Sort((left, right) => left.Timestamp.CompareTo(right.Timestamp));
+                int insertionIndex = ~candleIndex;
+                if (insertionIndex == _candles.Count)
+                {
+                    _candles.Add(candle);
+                }
+                else
+                {
+                    _candles.Insert(insertionIndex, candle);
+                }
             }
 
-            while (_candles.Count > _currentRange.MaximumPoints)
+            int overflowCount = _candles.Count - _currentRange.MaximumPoints;
+            if (overflowCount > default(int))
             {
-                _candles.RemoveAt(0);
+                _candles.RemoveRange(default(int), overflowCount);
             }
+        }
+
+        private void CancelRangeLoad()
+        {
+            if (_rangeLoadCancellation == null)
+            {
+                return;
+            }
+
+            _rangeLoadCancellation.Cancel();
+            _rangeLoadCancellation = null;
+        }
+
+        private int FindCandleIndex(long timestamp)
+        {
+            int low = default(int);
+            int high = _candles.Count - 1;
+            while (low <= high)
+            {
+                int middle = low + (high - low) / 2;
+                long candidateTimestamp = _candles[middle].Timestamp;
+                if (candidateTimestamp == timestamp)
+                {
+                    return middle;
+                }
+
+                if (candidateTimestamp < timestamp)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return ~low;
         }
 
         private void RenderMarket()
@@ -848,16 +1092,6 @@ namespace StockPerpTicker
             _clockLabel.Text = now.ToString("HH:mm:ss") + " UTC" + sign + absolute.Hours.ToString();
         }
 
-        private void UpdateRangeButtons()
-        {
-            foreach (KeyValuePair<string, Button> entry in _rangeButtons)
-            {
-                bool selected = string.Equals(entry.Key, _currentRange.Key, StringComparison.OrdinalIgnoreCase);
-                entry.Value.ForeColor = selected ? UpColor : Color.FromArgb(19, 23, 34);
-                entry.Value.Font = selected ? _rangeFontBold : _rangeFontRegular;
-            }
-        }
-
         private async Task ShowSettingsAsync()
         {
             AppSettings editableSettings = SettingsStore.Clone(_settings);
@@ -898,6 +1132,32 @@ namespace StockPerpTicker
         {
             ConnectionStatus previousStatus = _connectionStatus;
             string previousMessage = _connectionMessage;
+            RangeDefinition targetRange;
+            string chartConfigurationError;
+            if (!RangeDefinition.TryCreate(
+                candidate.timeRange,
+                candidate.candlePeriod,
+                out targetRange,
+                out chartConfigurationError))
+            {
+                Logger.Info("已拒绝无效的 K 线配置：" + chartConfigurationError);
+                MessageBox.Show(
+                    this,
+                    chartConfigurationError,
+                    ChartConfigurationErrorTitle,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return false;
+            }
+
+            bool chartConfigurationChanged = !string.Equals(
+                _currentRange.Key,
+                targetRange.Key,
+                StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(
+                    _currentRange.SelectedPeriodKey,
+                    targetRange.SelectedPeriodKey,
+                    StringComparison.Ordinal);
             string currentInstrumentId = _instrument == null ? _selectedInstrumentId : _instrument.InstrumentId;
             string targetInstrumentId = candidate.instrumentIds.Any(
                 item => string.Equals(item, currentInstrumentId, StringComparison.OrdinalIgnoreCase))
@@ -913,6 +1173,9 @@ namespace StockPerpTicker
                 SettingsStore.Save(candidate);
                 ++_settingsGeneration;
                 _settings = SettingsStore.Clone(candidate);
+                _currentRange = targetRange;
+                SelectTimeRange(targetRange.Key);
+                SelectPeriod(targetRange.SelectedPeriodKey);
                 _selectedInstrumentId = targetInstrumentId;
                 ReplaceInstrumentInfos(validatedInstruments);
                 RebuildInstrumentButtons();
@@ -923,8 +1186,17 @@ namespace StockPerpTicker
 
                 if (instrumentChanged)
                 {
-                    Logger.Info("设置已保存，正在切换合约：" + targetInstrumentId);
+                    Logger.Info(
+                        "设置已保存，正在切换合约：" + targetInstrumentId + " / " + targetRange.Key
+                        + " / " + targetRange.RestBar);
                     await ActivateInstrumentAsync(targetInstrumentId, true);
+                }
+                else if (chartConfigurationChanged)
+                {
+                    Logger.Info(
+                        "设置已保存，正在切换 K 线配置：" + targetRange.Key + " / " + targetRange.RestBar);
+                    await ChangeRangeAsync(targetRange, false);
+                    SaveWindowState();
                 }
                 else
                 {
@@ -1307,6 +1579,7 @@ namespace StockPerpTicker
             _memoryTimer.Stop();
             _miniTickerRotationTimer.Stop();
             _applicationCancellation.Cancel();
+            CancelRangeLoad();
             StopRealtimeStream();
             _notifyIcon.Visible = false;
             HideTaskbarTicker();

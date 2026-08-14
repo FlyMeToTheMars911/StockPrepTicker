@@ -15,6 +15,8 @@ namespace StockPerpTicker
         public string instrumentId { get; set; }
         public string[] instrumentIds { get; set; }
         public int refreshIntervalMilliseconds { get; set; }
+        public string candlePeriod { get; set; }
+        public string timeRange { get; set; }
         public int[] movingAverages { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
         public string taskbarTickerPosition { get; set; }
@@ -123,6 +125,8 @@ namespace StockPerpTicker
                 instrumentId = "RAM-USDT-SWAP",
                 instrumentIds = new[] { "RAM-USDT-SWAP" },
                 refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds,
+                candlePeriod = CandlePeriodDefinition.AutomaticKey,
+                timeRange = RangeDefinition.DefaultKey,
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
@@ -139,6 +143,8 @@ namespace StockPerpTicker
                 instrumentId = settings.instrumentId,
                 instrumentIds = settings.instrumentIds == null ? null : (string[])settings.instrumentIds.Clone(),
                 refreshIntervalMilliseconds = settings.refreshIntervalMilliseconds,
+                candlePeriod = settings.candlePeriod,
+                timeRange = settings.timeRange,
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = settings.taskbarTickerPosition,
@@ -199,6 +205,18 @@ namespace StockPerpTicker
             {
                 error = "界面刷新间隔必须在 " + MinimumRefreshIntervalMilliseconds
                     + " 到 " + MaximumRefreshIntervalMilliseconds + " 毫秒之间。";
+                return false;
+            }
+
+            string candlePeriod = string.IsNullOrWhiteSpace(settings.candlePeriod)
+                ? CandlePeriodDefinition.AutomaticKey
+                : settings.candlePeriod.Trim();
+            string timeRange = string.IsNullOrWhiteSpace(settings.timeRange)
+                ? RangeDefinition.DefaultKey
+                : settings.timeRange.Trim();
+            RangeDefinition configuredRange;
+            if (!RangeDefinition.TryCreate(timeRange, candlePeriod, out configuredRange, out error))
+            {
                 return false;
             }
 
@@ -270,6 +288,8 @@ namespace StockPerpTicker
                 instrumentId = normalizedInstrumentIds[0],
                 instrumentIds = normalizedInstrumentIds.ToArray(),
                 refreshIntervalMilliseconds = refreshInterval,
+                candlePeriod = configuredRange.SelectedPeriodKey,
+                timeRange = configuredRange.Key,
                 movingAverages = normalizedMovingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = tickerPosition,

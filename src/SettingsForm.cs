@@ -7,12 +7,17 @@ namespace StockPerpTicker
 {
     internal sealed class SettingsForm : Form
     {
+        private const int DefaultComboBoxIndex = 0;
         private static readonly Color AccentColor = Color.FromArgb(8, 153, 129);
+        private static readonly Color ErrorColor = Color.FromArgb(192, 57, 43);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
         private readonly ListBox _instrumentListBox;
         private readonly TextBox _instrumentInput;
         private readonly Button _removeInstrumentButton;
         private readonly NumericUpDown _refreshIntervalInput;
+        private readonly ComboBox _candlePeriodComboBox;
+        private readonly ComboBox _timeRangeComboBox;
+        private readonly Label _chartConfigHint;
         private readonly Dictionary<int, CheckBox> _movingAverageChecks;
         private readonly CheckBox _showTaskbarTickerCheckBox;
         private readonly Label _tickerPositionLabel;
@@ -33,7 +38,7 @@ namespace StockPerpTicker
             _errorProvider = new ErrorProvider { BlinkStyle = ErrorBlinkStyle.NeverBlink, ContainerControl = this };
 
             Text = "设置 - StockPerpTicker";
-            ClientSize = new Size(500, 670);
+            ClientSize = new Size(500, 720);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -157,7 +162,47 @@ namespace StockPerpTicker
             refreshGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(153, 28), Text = "毫秒" });
             refreshGroup.Controls.Add(CreateHint("仅影响界面绘制，网络行情会持续接收", new Point(211, 27), new Size(235, 21)));
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 286), new Size(464, 84));
+            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 286), new Size(464, 108));
+            chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "周期" });
+            _candlePeriodComboBox = new ComboBox
+            {
+                Location = new Point(60, 23),
+                Size = new Size(142, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            foreach (CandlePeriodDefinition period in CandlePeriodDefinition.All)
+            {
+                _candlePeriodComboBox.Items.Add(period);
+            }
+
+            chartGroup.Controls.Add(_candlePeriodComboBox);
+            chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(226, 28), Text = "范围" });
+            _timeRangeComboBox = new ComboBox
+            {
+                Location = new Point(270, 23),
+                Size = new Size(176, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            foreach (RangeDefinition range in RangeDefinition.All)
+            {
+                _timeRangeComboBox.Items.Add(range);
+            }
+
+            chartGroup.Controls.Add(_timeRangeComboBox);
+            _chartConfigHint = CreateHint(string.Empty, new Point(16, 57), new Size(430, 40));
+            chartGroup.Controls.Add(_chartConfigHint);
+            _candlePeriodComboBox.SelectedIndexChanged += delegate
+            {
+                _errorProvider.SetError(_candlePeriodComboBox, string.Empty);
+                UpdateChartConfigHint();
+            };
+            _timeRangeComboBox.SelectedIndexChanged += delegate
+            {
+                _errorProvider.SetError(_candlePeriodComboBox, string.Empty);
+                UpdateChartConfigHint();
+            };
+
+            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 402), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -178,7 +223,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 378), new Size(464, 154));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 494), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -224,6 +269,7 @@ namespace StockPerpTicker
 
             content.Controls.Add(instrumentGroup);
             content.Controls.Add(refreshGroup);
+            content.Controls.Add(chartGroup);
             content.Controls.Add(movingAverageGroup);
             content.Controls.Add(taskbarTickerGroup);
 
@@ -302,6 +348,9 @@ namespace StockPerpTicker
                 SettingsStore.MinimumRefreshIntervalMilliseconds,
                 Math.Min(SettingsStore.MaximumRefreshIntervalMilliseconds, settings.refreshIntervalMilliseconds));
             _refreshIntervalInput.Value = refreshInterval;
+            SelectCandlePeriod(settings.candlePeriod);
+            SelectTimeRange(settings.timeRange);
+            UpdateChartConfigHint();
             foreach (KeyValuePair<int, CheckBox> entry in _movingAverageChecks)
             {
                 entry.Value.Checked = settings.movingAverages != null
@@ -337,6 +386,62 @@ namespace StockPerpTicker
 
             UpdateTickerPositionEnabled();
             _instrumentInput.Focus();
+        }
+
+        private void SelectCandlePeriod(string key)
+        {
+            for (int index = default(int); index < _candlePeriodComboBox.Items.Count; index++)
+            {
+                CandlePeriodDefinition period = _candlePeriodComboBox.Items[index] as CandlePeriodDefinition;
+                if (period != null && string.Equals(period.Key, key, StringComparison.Ordinal))
+                {
+                    _candlePeriodComboBox.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            _candlePeriodComboBox.SelectedIndex = DefaultComboBoxIndex;
+        }
+
+        private void SelectTimeRange(string key)
+        {
+            for (int index = default(int); index < _timeRangeComboBox.Items.Count; index++)
+            {
+                RangeDefinition range = _timeRangeComboBox.Items[index] as RangeDefinition;
+                if (range != null && string.Equals(range.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    _timeRangeComboBox.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            _timeRangeComboBox.SelectedIndex = DefaultComboBoxIndex;
+        }
+
+        private void UpdateChartConfigHint()
+        {
+            CandlePeriodDefinition period = _candlePeriodComboBox.SelectedItem as CandlePeriodDefinition;
+            RangeDefinition selectedRange = _timeRangeComboBox.SelectedItem as RangeDefinition;
+            if (period == null || selectedRange == null)
+            {
+                return;
+            }
+
+            RangeDefinition configuredRange;
+            string error;
+            if (!RangeDefinition.TryCreate(selectedRange.Key, period.Key, out configuredRange, out error))
+            {
+                _chartConfigHint.ForeColor = ErrorColor;
+                _chartConfigHint.Text = error;
+                return;
+            }
+
+            _chartConfigHint.ForeColor = SecondaryTextColor;
+            _chartConfigHint.Text = configuredRange.IsAllHistory
+                ? "最多回溯 " + configuredRange.MaximumPoints + " 根 " + configuredRange.PeriodLabel
+                    + "，实际范围受上市时间和接口历史限制"
+                : "预计加载 " + configuredRange.MaximumPoints + " 根 " + configuredRange.PeriodLabel
+                    + "，上限 " + RangeDefinition.MaximumConfigurablePoints + " 根";
         }
 
         private void UpdateTickerPositionEnabled()
@@ -377,6 +482,8 @@ namespace StockPerpTicker
                 instrumentId = instrumentIds.Count > default(int) ? instrumentIds[0] : null,
                 instrumentIds = instrumentIds.ToArray(),
                 refreshIntervalMilliseconds = decimal.ToInt32(_refreshIntervalInput.Value),
+                candlePeriod = GetSelectedCandlePeriodKey(),
+                timeRange = GetSelectedTimeRangeKey(),
                 movingAverages = movingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
                 taskbarTickerPosition = GetSelectedTickerPosition(),
@@ -389,14 +496,43 @@ namespace StockPerpTicker
             string error;
             if (!SettingsStore.TryNormalize(candidate, out normalizedSettings, out error))
             {
-                _errorProvider.SetError(_instrumentInput, error);
-                _instrumentInput.Focus();
+                RangeDefinition configuredRange;
+                string chartError;
+                if (!RangeDefinition.TryCreate(
+                    candidate.timeRange,
+                    candidate.candlePeriod,
+                    out configuredRange,
+                    out chartError))
+                {
+                    _chartConfigHint.ForeColor = ErrorColor;
+                    _chartConfigHint.Text = chartError;
+                    _errorProvider.SetError(_candlePeriodComboBox, chartError);
+                    _candlePeriodComboBox.Focus();
+                }
+                else
+                {
+                    _errorProvider.SetError(_instrumentInput, error);
+                    _instrumentInput.Focus();
+                }
+
                 return;
             }
 
             Settings = normalizedSettings;
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        private string GetSelectedCandlePeriodKey()
+        {
+            CandlePeriodDefinition period = _candlePeriodComboBox.SelectedItem as CandlePeriodDefinition;
+            return period == null ? null : period.Key;
+        }
+
+        private string GetSelectedTimeRangeKey()
+        {
+            RangeDefinition range = _timeRangeComboBox.SelectedItem as RangeDefinition;
+            return range == null ? null : range.Key;
         }
 
         private bool AddInstrument()
