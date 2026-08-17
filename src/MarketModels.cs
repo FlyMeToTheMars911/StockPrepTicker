@@ -156,7 +156,7 @@ namespace StockPerpTicker
 
     internal sealed class RangeDefinition
     {
-        internal const string DefaultKey = "1D";
+        internal const string DefaultKey = "ALL";
         internal const int MaximumConfigurablePoints = 3000;
         private static readonly RangeDefinition[] Items =
         {
@@ -218,6 +218,14 @@ namespace StockPerpTicker
             foreach (RangeDefinition item in Items)
             {
                 if (string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return item;
+                }
+            }
+
+            foreach (RangeDefinition item in Items)
+            {
+                if (string.Equals(item.Key, DefaultKey, StringComparison.Ordinal))
                 {
                     return item;
                 }

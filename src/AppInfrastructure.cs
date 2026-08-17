@@ -431,7 +431,7 @@ namespace StockPerpTicker
                 Width = 500,
                 Height = 360,
                 TopMost = false,
-                RangeKey = "1D",
+                RangeKey = RangeDefinition.DefaultKey,
                 InstrumentId = null
             };
         }

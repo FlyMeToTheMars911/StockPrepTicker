@@ -69,7 +69,7 @@ namespace StockPerpTicker
             _smallFont = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point);
             _axisFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
             _candles = new List<Candle>();
-            _range = RangeDefinition.Find("1D");
+            _range = RangeDefinition.Find(RangeDefinition.DefaultKey);
             _tickSize = 0.01m;
             _movingAverages = new int[0];
             _message = "正在加载行情…";
@@ -93,7 +93,7 @@ namespace StockPerpTicker
 
             NormalizeViewport();
             _snapshot = snapshot;
-            _range = range ?? RangeDefinition.Find("1D");
+            _range = range ?? RangeDefinition.Find(RangeDefinition.DefaultKey);
             _tickSize = tickSize;
             _movingAverages = movingAverages == null ? new int[0] : (int[])movingAverages.Clone();
             _message = string.Empty;

@@ -438,7 +438,7 @@ namespace StockPerpTicker
 
             _chartConfigHint.ForeColor = SecondaryTextColor;
             _chartConfigHint.Text = configuredRange.IsAllHistory
-                ? "最多回溯 " + configuredRange.MaximumPoints + " 根 " + configuredRange.PeriodLabel
+                ? "按当前周期尽可能回溯，最多加载 " + configuredRange.MaximumPoints + " 根 " + configuredRange.PeriodLabel
                     + "，实际范围受上市时间和接口历史限制"
                 : "预计加载 " + configuredRange.MaximumPoints + " 根 " + configuredRange.PeriodLabel
                     + "，上限 " + RangeDefinition.MaximumConfigurablePoints + " 根";

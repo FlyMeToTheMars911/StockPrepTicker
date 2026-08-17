@@ -35,7 +35,6 @@ namespace StockPerpTicker
         private readonly Label _changeLabel;
         private readonly Label _statusLabel;
         private readonly Label _clockLabel;
-        private readonly ComboBox _rangeComboBox;
         private readonly ComboBox _periodComboBox;
         private readonly Button _pinButton;
         private readonly Button _settingsButton;
@@ -66,7 +65,6 @@ namespace StockPerpTicker
         private bool _windowRestoreInProgress;
         private bool _normalBoundsCapturePending;
         private bool _miniTickerBusy;
-        private bool _rangeSelectionReady;
         private bool _periodSelectionReady;
         private Rectangle _lastNormalBounds;
         private FormWindowState _windowStateBeforeMinimize;
@@ -193,7 +191,7 @@ namespace StockPerpTicker
                 Height = 42,
                 BackColor = Color.White
             };
-            Panel rangeBar = new Panel
+            Panel chartBar = new Panel
             {
                 Dock = DockStyle.Top,
                 Height = 42,
@@ -211,39 +209,15 @@ namespace StockPerpTicker
                 Visible = false
             };
 
-            rangeBar.Controls.Add(new Label
+            chartBar.Controls.Add(new Label
             {
                 AutoSize = true,
                 Location = new Point(8, 14),
-                Text = "范围"
-            });
-            _rangeComboBox = new ComboBox
-            {
-                Location = new Point(42, 9),
-                Size = new Size(80, 25),
-                DropDownWidth = 104,
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                TabStop = false
-            };
-            foreach (RangeDefinition range in RangeDefinition.All)
-            {
-                _rangeComboBox.Items.Add(range);
-            }
-
-            SelectTimeRange(_currentRange.Key);
-            _rangeComboBox.SelectedIndexChanged += async delegate { await ChangeTimeRangeFromSelectionAsync(); };
-            _rangeSelectionReady = true;
-            rangeBar.Controls.Add(_rangeComboBox);
-
-            rangeBar.Controls.Add(new Label
-            {
-                AutoSize = true,
-                Location = new Point(128, 14),
                 Text = "周期"
             });
             _periodComboBox = new ComboBox
             {
-                Location = new Point(162, 9),
+                Location = new Point(42, 9),
                 Size = new Size(88, 25),
                 DropDownWidth = 120,
                 DropDownStyle = ComboBoxStyle.DropDownList,
@@ -257,7 +231,7 @@ namespace StockPerpTicker
             SelectPeriod(_currentRange.SelectedPeriodKey);
             _periodComboBox.SelectedIndexChanged += async delegate { await ChangeCandlePeriodAsync(); };
             _periodSelectionReady = true;
-            rangeBar.Controls.Add(_periodComboBox);
+            chartBar.Controls.Add(_periodComboBox);
 
             _clockLabel = new Label
             {
@@ -267,9 +241,9 @@ namespace StockPerpTicker
                 Padding = new Padding(0, 0, 8, 0),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point)
             };
-            rangeBar.Controls.Add(_clockLabel);
+            chartBar.Controls.Add(_clockLabel);
             _bottomBar.Controls.Add(_instrumentStrip);
-            _bottomBar.Controls.Add(rangeBar);
+            _bottomBar.Controls.Add(chartBar);
             RebuildInstrumentButtons();
 
             Controls.Add(_chart);
@@ -347,49 +321,6 @@ namespace StockPerpTicker
             FormClosed += HandleFormClosed;
         }
 
-        private async Task ChangeTimeRangeFromSelectionAsync()
-        {
-            if (!_rangeSelectionReady)
-            {
-                return;
-            }
-
-            RangeDefinition selectedRange = _rangeComboBox.SelectedItem as RangeDefinition;
-            if (selectedRange == null
-                || string.Equals(selectedRange.Key, _currentRange.Key, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            await ChangeTimeRangeAsync(selectedRange.Key);
-        }
-
-        private async Task ChangeTimeRangeAsync(string rangeKey)
-        {
-            RangeDefinition range;
-            string error;
-            if (!RangeDefinition.TryCreate(rangeKey, _currentRange.SelectedPeriodKey, out range, out error))
-            {
-                SelectTimeRange(_currentRange.Key);
-                MessageBox.Show(
-                    this,
-                    error,
-                    ChartConfigurationErrorTitle,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-                return;
-            }
-
-            if (_instrument == null)
-            {
-                _currentRange = range;
-                _settings.timeRange = range.Key;
-                return;
-            }
-
-            await ChangeRangeAsync(range, true);
-        }
-
         private async Task ChangeCandlePeriodAsync()
         {
             if (!_periodSelectionReady)
@@ -426,30 +357,6 @@ namespace StockPerpTicker
             }
 
             await ChangeRangeAsync(range, true);
-        }
-
-        private void SelectTimeRange(string rangeKey)
-        {
-            bool selectionWasReady = _rangeSelectionReady;
-            _rangeSelectionReady = false;
-            try
-            {
-                for (int index = default(int); index < _rangeComboBox.Items.Count; index++)
-                {
-                    RangeDefinition range = _rangeComboBox.Items[index] as RangeDefinition;
-                    if (range != null && string.Equals(range.Key, rangeKey, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _rangeComboBox.SelectedIndex = index;
-                        return;
-                    }
-                }
-
-                _rangeComboBox.SelectedIndex = default(int);
-            }
-            finally
-            {
-                _rangeSelectionReady = selectionWasReady;
-            }
         }
 
         private void SelectPeriod(string periodKey)
@@ -724,7 +631,6 @@ namespace StockPerpTicker
             _currentRange = range;
             _settings.timeRange = range.Key;
             _settings.candlePeriod = range.SelectedPeriodKey;
-            SelectTimeRange(range.Key);
             SelectPeriod(range.SelectedPeriodKey);
             if (persistConfiguration)
             {
@@ -1174,7 +1080,6 @@ namespace StockPerpTicker
                 ++_settingsGeneration;
                 _settings = SettingsStore.Clone(candidate);
                 _currentRange = targetRange;
-                SelectTimeRange(targetRange.Key);
                 SelectPeriod(targetRange.SelectedPeriodKey);
                 _selectedInstrumentId = targetInstrumentId;
                 ReplaceInstrumentInfos(validatedInstruments);
