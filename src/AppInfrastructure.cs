@@ -14,6 +14,7 @@ namespace StockPerpTicker
     {
         public string instrumentId { get; set; }
         public string[] instrumentIds { get; set; }
+        public Dictionary<string, decimal> positionCosts { get; set; }
         public int refreshIntervalMilliseconds { get; set; }
         public string candlePeriod { get; set; }
         public string timeRange { get; set; }
@@ -124,6 +125,7 @@ namespace StockPerpTicker
             {
                 instrumentId = "RAM-USDT-SWAP",
                 instrumentIds = new[] { "RAM-USDT-SWAP" },
+                positionCosts = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase),
                 refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds,
                 candlePeriod = CandlePeriodDefinition.AutomaticKey,
                 timeRange = RangeDefinition.DefaultKey,
@@ -142,6 +144,9 @@ namespace StockPerpTicker
             {
                 instrumentId = settings.instrumentId,
                 instrumentIds = settings.instrumentIds == null ? null : (string[])settings.instrumentIds.Clone(),
+                positionCosts = settings.positionCosts == null
+                    ? new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, decimal>(settings.positionCosts, StringComparer.OrdinalIgnoreCase),
                 refreshIntervalMilliseconds = settings.refreshIntervalMilliseconds,
                 candlePeriod = settings.candlePeriod,
                 timeRange = settings.timeRange,
@@ -195,6 +200,33 @@ namespace StockPerpTicker
             {
                 error = "最多可以配置 " + MaximumInstrumentCount + " 个行情标的。";
                 return false;
+            }
+
+            Dictionary<string, decimal> normalizedPositionCosts = new Dictionary<string, decimal>(
+                StringComparer.OrdinalIgnoreCase);
+            if (settings.positionCosts != null)
+            {
+                foreach (KeyValuePair<string, decimal> entry in settings.positionCosts)
+                {
+                    string positionInstrumentId;
+                    string positionInstrumentError;
+                    if (!TryNormalizeInstrumentId(
+                        entry.Key,
+                        out positionInstrumentId,
+                        out positionInstrumentError)
+                        || !uniqueInstrumentIds.Contains(positionInstrumentId))
+                    {
+                        continue;
+                    }
+
+                    if (entry.Value <= decimal.Zero)
+                    {
+                        error = positionInstrumentId + " 的持仓成本必须大于 0。";
+                        return false;
+                    }
+
+                    normalizedPositionCosts[positionInstrumentId] = entry.Value;
+                }
             }
 
             int refreshInterval = settings.refreshIntervalMilliseconds == default(int)
@@ -287,6 +319,7 @@ namespace StockPerpTicker
             {
                 instrumentId = normalizedInstrumentIds[0],
                 instrumentIds = normalizedInstrumentIds.ToArray(),
+                positionCosts = normalizedPositionCosts,
                 refreshIntervalMilliseconds = refreshInterval,
                 candlePeriod = configuredRange.SelectedPeriodKey,
                 timeRange = configuredRange.Key,

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Windows.Forms;
 
 namespace StockPerpTicker
@@ -8,11 +9,13 @@ namespace StockPerpTicker
     internal sealed class SettingsForm : Form
     {
         private const int DefaultComboBoxIndex = 0;
+        private const string PositionCostFormat = "0.############################";
         private static readonly Color AccentColor = Color.FromArgb(8, 153, 129);
         private static readonly Color ErrorColor = Color.FromArgb(192, 57, 43);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
         private readonly ListBox _instrumentListBox;
         private readonly TextBox _instrumentInput;
+        private readonly TextBox _positionCostInput;
         private readonly Button _removeInstrumentButton;
         private readonly NumericUpDown _refreshIntervalInput;
         private readonly ComboBox _candlePeriodComboBox;
@@ -107,21 +110,24 @@ namespace StockPerpTicker
                 BackColor = Color.White
             };
 
-            GroupBox instrumentGroup = CreateGroup("行情标的", new Point(18, 12), new Size(464, 180));
+            GroupBox instrumentGroup = CreateGroup("行情标的", new Point(18, 12), new Size(464, 210));
             _instrumentListBox = new ListBox
             {
                 Location = new Point(16, 24),
-                Size = new Size(300, 91),
-                IntegralHeight = false
+                Size = new Size(300, 87),
+                IntegralHeight = false,
+                HorizontalScrollbar = true
             };
             _instrumentListBox.SelectedIndexChanged += delegate
             {
                 _removeInstrumentButton.Enabled = _instrumentListBox.SelectedIndex >= default(int);
+                LoadSelectedInstrument();
             };
+            instrumentGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 119), Text = "合约代码" });
             _instrumentInput = new TextBox
             {
-                Location = new Point(16, 124),
-                Size = new Size(300, 25),
+                Location = new Point(16, 140),
+                Size = new Size(200, 25),
                 CharacterCasing = CharacterCasing.Upper,
                 MaxLength = 64
             };
@@ -134,21 +140,47 @@ namespace StockPerpTicker
                     args.SuppressKeyPress = true;
                 }
             };
-            Button addInstrumentButton = CreateSecondaryButton("添加标的", new Point(326, 123), new Size(120, 28));
+            instrumentGroup.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Location = new Point(226, 119),
+                Text = "持仓成本（选填）"
+            });
+            _positionCostInput = new TextBox
+            {
+                Location = new Point(226, 140),
+                Size = new Size(90, 25),
+                MaxLength = 40,
+                TextAlign = HorizontalAlignment.Right
+            };
+            _positionCostInput.TextChanged += delegate
+            {
+                _errorProvider.SetError(_positionCostInput, string.Empty);
+            };
+            _positionCostInput.KeyDown += delegate(object sender, KeyEventArgs args)
+            {
+                if (args.KeyCode == Keys.Enter)
+                {
+                    AddInstrument();
+                    args.SuppressKeyPress = true;
+                }
+            };
+            Button addInstrumentButton = CreateSecondaryButton("添加/更新", new Point(326, 138), new Size(120, 28));
             addInstrumentButton.Click += delegate { AddInstrument(); };
             _removeInstrumentButton = CreateSecondaryButton("移除选中", new Point(326, 24), new Size(120, 28));
             _removeInstrumentButton.Enabled = false;
             _removeInstrumentButton.Click += delegate { RemoveSelectedInstrument(); };
             instrumentGroup.Controls.Add(_instrumentListBox);
             instrumentGroup.Controls.Add(_instrumentInput);
+            instrumentGroup.Controls.Add(_positionCostInput);
             instrumentGroup.Controls.Add(addInstrumentButton);
             instrumentGroup.Controls.Add(_removeInstrumentButton);
             instrumentGroup.Controls.Add(CreateHint(
-                "输入完整的 OKX 永续合约代码并添加，最多 " + SettingsStore.MaximumInstrumentCount + " 个",
-                new Point(16, 154),
-                new Size(430, 20)));
+                "选择已有标的可修改成本；成本留空则不展示盈亏。最多 " + SettingsStore.MaximumInstrumentCount + " 个",
+                new Point(16, 174),
+                new Size(430, 24)));
 
-            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 200), new Size(464, 78));
+            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 230), new Size(464, 78));
             _refreshIntervalInput = new NumericUpDown
             {
                 Location = new Point(16, 25),
@@ -162,7 +194,7 @@ namespace StockPerpTicker
             refreshGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(153, 28), Text = "毫秒" });
             refreshGroup.Controls.Add(CreateHint("仅影响界面绘制，网络行情会持续接收", new Point(211, 27), new Size(235, 21)));
 
-            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 286), new Size(464, 108));
+            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 316), new Size(464, 108));
             chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "周期" });
             _candlePeriodComboBox = new ComboBox
             {
@@ -202,7 +234,7 @@ namespace StockPerpTicker
                 UpdateChartConfigHint();
             };
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 402), new Size(464, 84));
+            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 432), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -223,7 +255,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 494), new Size(464, 154));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 524), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -278,6 +310,7 @@ namespace StockPerpTicker
             Controls.Add(header);
 
             _errorProvider.SetIconAlignment(_instrumentInput, ErrorIconAlignment.MiddleRight);
+            _errorProvider.SetIconAlignment(_positionCostInput, ErrorIconAlignment.MiddleRight);
             AcceptButton = saveButton;
             CancelButton = cancelButton;
             LoadSettings(editableSettings);
@@ -334,16 +367,18 @@ namespace StockPerpTicker
             {
                 if (!string.IsNullOrWhiteSpace(instrumentId))
                 {
-                    _instrumentListBox.Items.Add(instrumentId);
+                    decimal positionCost = decimal.Zero;
+                    bool hasPositionCost = settings.positionCosts != null
+                        && settings.positionCosts.TryGetValue(instrumentId, out positionCost);
+                    _instrumentListBox.Items.Add(new InstrumentSettingItem(
+                        instrumentId,
+                        hasPositionCost ? (decimal?)positionCost : null));
                 }
             }
 
-            if (_instrumentListBox.Items.Count > default(int))
-            {
-                _instrumentListBox.SelectedIndex = default(int);
-            }
-
+            _instrumentListBox.ClearSelected();
             _instrumentInput.Clear();
+            _positionCostInput.Clear();
             decimal refreshInterval = Math.Max(
                 SettingsStore.MinimumRefreshIntervalMilliseconds,
                 Math.Min(SettingsStore.MaximumRefreshIntervalMilliseconds, settings.refreshIntervalMilliseconds));
@@ -457,15 +492,29 @@ namespace StockPerpTicker
 
         private void SaveSettings(object sender, EventArgs args)
         {
-            if (!string.IsNullOrWhiteSpace(_instrumentInput.Text) && !AddInstrument())
+            if ((!string.IsNullOrWhiteSpace(_instrumentInput.Text)
+                || !string.IsNullOrWhiteSpace(_positionCostInput.Text))
+                && !AddInstrument())
             {
                 return;
             }
 
             List<string> instrumentIds = new List<string>();
+            Dictionary<string, decimal> positionCosts = new Dictionary<string, decimal>(
+                StringComparer.OrdinalIgnoreCase);
             foreach (object item in _instrumentListBox.Items)
             {
-                instrumentIds.Add(Convert.ToString(item));
+                InstrumentSettingItem instrument = item as InstrumentSettingItem;
+                if (instrument == null)
+                {
+                    continue;
+                }
+
+                instrumentIds.Add(instrument.InstrumentId);
+                if (instrument.PositionCost.HasValue)
+                {
+                    positionCosts[instrument.InstrumentId] = instrument.PositionCost.Value;
+                }
             }
 
             List<int> movingAverages = new List<int>();
@@ -481,6 +530,7 @@ namespace StockPerpTicker
             {
                 instrumentId = instrumentIds.Count > default(int) ? instrumentIds[0] : null,
                 instrumentIds = instrumentIds.ToArray(),
+                positionCosts = positionCosts,
                 refreshIntervalMilliseconds = decimal.ToInt32(_refreshIntervalInput.Value),
                 candlePeriod = GetSelectedCandlePeriodKey(),
                 timeRange = GetSelectedTimeRangeKey(),
@@ -547,15 +597,22 @@ namespace StockPerpTicker
                 return false;
             }
 
+            decimal? positionCost;
+            if (!TryReadPositionCost(out positionCost))
+            {
+                return false;
+            }
+
             for (int index = default(int); index < _instrumentListBox.Items.Count; index++)
             {
+                InstrumentSettingItem existingInstrument = _instrumentListBox.Items[index] as InstrumentSettingItem;
                 if (string.Equals(
-                    Convert.ToString(_instrumentListBox.Items[index]),
+                    existingInstrument == null ? null : existingInstrument.InstrumentId,
                     normalizedInstrumentId,
                     StringComparison.OrdinalIgnoreCase))
                 {
-                    _instrumentListBox.SelectedIndex = index;
-                    _instrumentInput.Clear();
+                    _instrumentListBox.Items[index] = new InstrumentSettingItem(normalizedInstrumentId, positionCost);
+                    ClearInstrumentEditor();
                     return true;
                 }
             }
@@ -568,11 +625,63 @@ namespace StockPerpTicker
                 return false;
             }
 
-            _instrumentListBox.Items.Add(normalizedInstrumentId);
-            _instrumentListBox.SelectedIndex = _instrumentListBox.Items.Count - 1;
-            _instrumentInput.Clear();
+            _instrumentListBox.Items.Add(new InstrumentSettingItem(normalizedInstrumentId, positionCost));
+            ClearInstrumentEditor();
             _instrumentInput.Focus();
             return true;
+        }
+
+        private bool TryReadPositionCost(out decimal? positionCost)
+        {
+            positionCost = null;
+            string text = _positionCostInput.Text.Trim();
+            if (string.IsNullOrEmpty(text))
+            {
+                return true;
+            }
+
+            decimal parsedPositionCost;
+            bool parsed = decimal.TryParse(
+                text,
+                NumberStyles.Number,
+                CultureInfo.CurrentCulture,
+                out parsedPositionCost)
+                || decimal.TryParse(
+                    text,
+                    NumberStyles.Number,
+                    CultureInfo.InvariantCulture,
+                    out parsedPositionCost);
+            if (!parsed || parsedPositionCost <= decimal.Zero)
+            {
+                _errorProvider.SetError(_positionCostInput, "持仓成本必须是大于 0 的数字。");
+                _positionCostInput.Focus();
+                _positionCostInput.SelectAll();
+                return false;
+            }
+
+            positionCost = parsedPositionCost;
+            return true;
+        }
+
+        private void LoadSelectedInstrument()
+        {
+            InstrumentSettingItem selectedInstrument = _instrumentListBox.SelectedItem as InstrumentSettingItem;
+            if (selectedInstrument == null)
+            {
+                return;
+            }
+
+            _instrumentInput.Text = selectedInstrument.InstrumentId;
+            _positionCostInput.Text = selectedInstrument.PositionCost.HasValue
+                ? selectedInstrument.PositionCost.Value.ToString(PositionCostFormat, CultureInfo.InvariantCulture)
+                : string.Empty;
+        }
+
+        private void ClearInstrumentEditor()
+        {
+            _instrumentListBox.ClearSelected();
+            _instrumentInput.Clear();
+            _positionCostInput.Clear();
         }
 
         private void RemoveSelectedInstrument()
@@ -584,12 +693,28 @@ namespace StockPerpTicker
             }
 
             _instrumentListBox.Items.RemoveAt(selectedIndex);
-            if (_instrumentListBox.Items.Count > default(int))
+            ClearInstrumentEditor();
+            _instrumentInput.Focus();
+        }
+
+        private sealed class InstrumentSettingItem
+        {
+            internal InstrumentSettingItem(string instrumentId, decimal? positionCost)
             {
-                _instrumentListBox.SelectedIndex = Math.Min(selectedIndex, _instrumentListBox.Items.Count - 1);
+                InstrumentId = instrumentId;
+                PositionCost = positionCost;
             }
 
-            _instrumentInput.Focus();
+            internal string InstrumentId { get; private set; }
+            internal decimal? PositionCost { get; private set; }
+
+            public override string ToString()
+            {
+                return PositionCost.HasValue
+                    ? InstrumentId + "    持仓成本 "
+                        + PositionCost.Value.ToString(PositionCostFormat, CultureInfo.InvariantCulture)
+                    : InstrumentId;
+            }
         }
 
         private string GetSelectedTickerPosition()

@@ -33,6 +33,7 @@ namespace StockPerpTicker
         private readonly Label _symbolLabel;
         private readonly Label _priceLabel;
         private readonly Label _changeLabel;
+        private readonly Label _profitLossLabel;
         private readonly Label _statusLabel;
         private readonly Label _clockLabel;
         private readonly ComboBox _periodComboBox;
@@ -146,6 +147,17 @@ namespace StockPerpTicker
                 Font = new Font("Microsoft YaHei UI", 8f, FontStyle.Regular, GraphicsUnit.Point),
                 Text = "● 正在启动"
             };
+            _profitLossLabel = new Label
+            {
+                AutoSize = false,
+                Location = new Point(320, 26),
+                Size = new Size(132, 17),
+                ForeColor = SecondaryTextColor,
+                Font = new Font("Microsoft YaHei UI", 8f, FontStyle.Bold, GraphicsUnit.Point),
+                Text = string.Empty,
+                TextAlign = ContentAlignment.MiddleRight,
+                Visible = false
+            };
             _pinButton = new Button
             {
                 Anchor = AnchorStyles.Top | AnchorStyles.Right,
@@ -174,6 +186,7 @@ namespace StockPerpTicker
             topBar.Controls.Add(_priceLabel);
             topBar.Controls.Add(_changeLabel);
             topBar.Controls.Add(_statusLabel);
+            topBar.Controls.Add(_profitLossLabel);
             topBar.Controls.Add(_pinButton);
             topBar.Controls.Add(_settingsButton);
             topBar.Resize += delegate
@@ -385,6 +398,11 @@ namespace StockPerpTicker
 
         private void LayoutTopBar(Panel topBar)
         {
+            if (topBar == null)
+            {
+                return;
+            }
+
             _settingsButton.Left = Math.Max(0, topBar.ClientSize.Width - _settingsButton.Width - 8);
             _pinButton.Left = Math.Max(0, _settingsButton.Left - _pinButton.Width - 6);
             int contentRight = Math.Max(210, _pinButton.Left - 4);
@@ -392,7 +410,19 @@ namespace StockPerpTicker
             _priceLabel.Left = _symbolLabel.Right + 4;
             _changeLabel.Left = _priceLabel.Right + 4;
             _changeLabel.Width = Math.Max(54, contentRight - _changeLabel.Left);
-            _statusLabel.Width = Math.Max(140, contentRight - _statusLabel.Left);
+            if (_profitLossLabel.Visible)
+            {
+                _profitLossLabel.Left = Math.Max(
+                    _statusLabel.Left,
+                    contentRight - _profitLossLabel.Width);
+                _statusLabel.Width = Math.Max(
+                    110,
+                    _profitLossLabel.Left - _statusLabel.Left - 4);
+            }
+            else
+            {
+                _statusLabel.Width = Math.Max(140, contentRight - _statusLabel.Left);
+            }
         }
 
         private static string ResolveInitialInstrumentId(string savedInstrumentId, string[] configuredInstrumentIds)
@@ -601,6 +631,7 @@ namespace StockPerpTicker
             _symbolLabel.Text = instrument.InstrumentId;
             _priceLabel.Text = "--";
             _changeLabel.Text = "--";
+            UpdateHeader();
             Text = instrument.InstrumentId + " - StockPerpTicker";
             _notifyIcon.Text = "StockPerpTicker";
             UpdateInstrumentSelection();
@@ -949,6 +980,7 @@ namespace StockPerpTicker
 
         private void UpdateHeader()
         {
+            UpdateProfitLossLabel();
             if (_snapshot == null || _instrument == null)
             {
                 return;
@@ -961,6 +993,59 @@ namespace StockPerpTicker
             _changeLabel.ForeColor = color;
             _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00") + "%";
             _notifyIcon.Text = (_instrument.InstrumentId + "  " + _priceLabel.Text).Substring(0, Math.Min(63, _instrument.InstrumentId.Length + 2 + _priceLabel.Text.Length));
+        }
+
+        private void UpdateProfitLossLabel()
+        {
+            decimal positionCost = decimal.Zero;
+            bool hasPositionCost = _settings.positionCosts != null
+                && !string.IsNullOrWhiteSpace(_selectedInstrumentId)
+                && _settings.positionCosts.TryGetValue(_selectedInstrumentId, out positionCost);
+            bool visibilityChanged = _profitLossLabel.Visible != hasPositionCost;
+            _profitLossLabel.Visible = hasPositionCost;
+            if (!hasPositionCost)
+            {
+                _profitLossLabel.Text = string.Empty;
+                if (visibilityChanged)
+                {
+                    LayoutTopBar(_profitLossLabel.Parent as Panel);
+                }
+
+                return;
+            }
+
+            if (_snapshot == null || _snapshot.LastPrice <= decimal.Zero)
+            {
+                _profitLossLabel.Text = "当前盈亏 --";
+                _profitLossLabel.ForeColor = SecondaryTextColor;
+                if (visibilityChanged)
+                {
+                    LayoutTopBar(_profitLossLabel.Parent as Panel);
+                }
+
+                return;
+            }
+
+            try
+            {
+                decimal profitLossPercent = (_snapshot.LastPrice - positionCost) / positionCost * 100m;
+                _profitLossLabel.ForeColor = profitLossPercent > decimal.Zero
+                    ? UpColor
+                    : profitLossPercent < decimal.Zero ? DownColor : SecondaryTextColor;
+                _profitLossLabel.Text = "当前盈亏 "
+                    + (profitLossPercent > decimal.Zero ? "+" : string.Empty)
+                    + profitLossPercent.ToString("0.00") + "%";
+            }
+            catch (OverflowException)
+            {
+                _profitLossLabel.Text = "当前盈亏 --";
+                _profitLossLabel.ForeColor = SecondaryTextColor;
+            }
+
+            if (visibilityChanged)
+            {
+                LayoutTopBar(_profitLossLabel.Parent as Panel);
+            }
         }
 
         private void SetConnectionStatus(ConnectionStatus status, string message)
@@ -1106,6 +1191,7 @@ namespace StockPerpTicker
                 else
                 {
                     RenderMarket();
+                    UpdateHeader();
                     SetConnectionStatus(previousStatus, previousMessage);
                     Logger.Info("行情设置已保存并应用。");
                 }
