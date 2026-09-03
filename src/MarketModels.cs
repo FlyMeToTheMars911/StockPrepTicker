@@ -4,6 +4,58 @@ using System.Globalization;
 
 namespace StockPerpTicker
 {
+    internal enum DisplayTimeZone
+    {
+        Beijing,
+        UsEastern
+    }
+
+    internal static class DisplayTimeConverter
+    {
+        private const string BeijingWindowsTimeZoneId = "China Standard Time";
+        private const string UsEasternWindowsTimeZoneId = "Eastern Standard Time";
+        private static readonly DateTime UnixEpoch = new DateTime(
+            1970,
+            1,
+            1,
+            0,
+            0,
+            0,
+            DateTimeKind.Utc);
+        private static readonly TimeZoneInfo BeijingTimeZone = TimeZoneInfo.FindSystemTimeZoneById(
+            BeijingWindowsTimeZoneId);
+        private static readonly TimeZoneInfo UsEasternTimeZone = TimeZoneInfo.FindSystemTimeZoneById(
+            UsEasternWindowsTimeZoneId);
+
+        internal static DateTime FromUnixMilliseconds(long timestamp, DisplayTimeZone displayTimeZone)
+        {
+            return FromUtc(UnixEpoch.AddMilliseconds(timestamp), displayTimeZone);
+        }
+
+        internal static DateTime FromUtc(DateTime utc, DisplayTimeZone displayTimeZone)
+        {
+            DateTime normalizedUtc = utc.Kind == DateTimeKind.Utc
+                ? utc
+                : DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+            return TimeZoneInfo.ConvertTimeFromUtc(normalizedUtc, GetTimeZone(displayTimeZone));
+        }
+
+        internal static TimeSpan GetUtcOffset(DateTime utc, DisplayTimeZone displayTimeZone)
+        {
+            DateTime normalizedUtc = utc.Kind == DateTimeKind.Utc
+                ? utc
+                : DateTime.SpecifyKind(utc, DateTimeKind.Utc);
+            return GetTimeZone(displayTimeZone).GetUtcOffset(normalizedUtc);
+        }
+
+        private static TimeZoneInfo GetTimeZone(DisplayTimeZone displayTimeZone)
+        {
+            return displayTimeZone == DisplayTimeZone.UsEastern
+                ? UsEasternTimeZone
+                : BeijingTimeZone;
+        }
+    }
+
     internal sealed class Candle
     {
         internal long Timestamp { get; set; }
@@ -12,15 +64,6 @@ namespace StockPerpTicker
         internal decimal Low { get; set; }
         internal decimal Close { get; set; }
         internal decimal Volume { get; set; }
-
-        internal DateTime LocalTime
-        {
-            get
-            {
-                DateTime utc = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(Timestamp);
-                return utc.ToLocalTime();
-            }
-        }
     }
 
     internal sealed class MarketSnapshot

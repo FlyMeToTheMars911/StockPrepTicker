@@ -18,6 +18,7 @@ namespace StockPerpTicker
         public int refreshIntervalMilliseconds { get; set; }
         public string candlePeriod { get; set; }
         public string timeRange { get; set; }
+        public string timeZone { get; set; }
         public int[] movingAverages { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
         public string taskbarTickerPosition { get; set; }
@@ -26,6 +27,7 @@ namespace StockPerpTicker
         public int taskbarTickerCustomTop { get; set; }
         public int taskbarTickerRotationIntervalSeconds { get; set; }
         internal TaskbarTickerPosition TickerPosition { get; set; }
+        internal DisplayTimeZone SelectedTimeZone { get; set; }
     }
 
     internal enum TaskbarTickerPosition
@@ -48,6 +50,8 @@ namespace StockPerpTicker
         internal const int MinimumTickerRotationIntervalSeconds = 2;
         internal const int MaximumTickerRotationIntervalSeconds = 60;
         internal const int MaximumInstrumentCount = 20;
+        internal const string BeijingTimeZone = "beijing";
+        internal const string UsEasternTimeZone = "usEastern";
         private const string BottomLeftTickerPosition = "bottomLeft";
         private const string BottomRightTickerPosition = "bottomRight";
         private const string TopLeftTickerPosition = "topLeft";
@@ -129,12 +133,14 @@ namespace StockPerpTicker
                 refreshIntervalMilliseconds = DefaultRefreshIntervalMilliseconds,
                 candlePeriod = CandlePeriodDefinition.AutomaticKey,
                 timeRange = RangeDefinition.DefaultKey,
+                timeZone = BeijingTimeZone,
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
                 hasCustomTaskbarTickerPosition = false,
                 taskbarTickerRotationIntervalSeconds = DefaultTickerRotationIntervalSeconds,
-                TickerPosition = TaskbarTickerPosition.BottomRight
+                TickerPosition = TaskbarTickerPosition.BottomRight,
+                SelectedTimeZone = DisplayTimeZone.Beijing
             };
         }
 
@@ -150,6 +156,7 @@ namespace StockPerpTicker
                 refreshIntervalMilliseconds = settings.refreshIntervalMilliseconds,
                 candlePeriod = settings.candlePeriod,
                 timeRange = settings.timeRange,
+                timeZone = settings.timeZone,
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = settings.taskbarTickerPosition,
@@ -157,7 +164,8 @@ namespace StockPerpTicker
                 taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
                 taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
                 taskbarTickerRotationIntervalSeconds = settings.taskbarTickerRotationIntervalSeconds,
-                TickerPosition = settings.TickerPosition
+                TickerPosition = settings.TickerPosition,
+                SelectedTimeZone = settings.SelectedTimeZone
             };
         }
 
@@ -252,6 +260,26 @@ namespace StockPerpTicker
                 return false;
             }
 
+            string timeZone = string.IsNullOrWhiteSpace(settings.timeZone)
+                ? BeijingTimeZone
+                : settings.timeZone.Trim();
+            DisplayTimeZone normalizedDisplayTimeZone;
+            if (string.Equals(timeZone, BeijingTimeZone, StringComparison.OrdinalIgnoreCase))
+            {
+                timeZone = BeijingTimeZone;
+                normalizedDisplayTimeZone = DisplayTimeZone.Beijing;
+            }
+            else if (string.Equals(timeZone, UsEasternTimeZone, StringComparison.OrdinalIgnoreCase))
+            {
+                timeZone = UsEasternTimeZone;
+                normalizedDisplayTimeZone = DisplayTimeZone.UsEastern;
+            }
+            else
+            {
+                error = "时间显示时区无效。";
+                return false;
+            }
+
             int tickerRotationInterval = settings.taskbarTickerRotationIntervalSeconds == default(int)
                 ? DefaultTickerRotationIntervalSeconds
                 : settings.taskbarTickerRotationIntervalSeconds;
@@ -323,6 +351,7 @@ namespace StockPerpTicker
                 refreshIntervalMilliseconds = refreshInterval,
                 candlePeriod = configuredRange.SelectedPeriodKey,
                 timeRange = configuredRange.Key,
+                timeZone = timeZone,
                 movingAverages = normalizedMovingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = tickerPosition,
@@ -330,7 +359,8 @@ namespace StockPerpTicker
                 taskbarTickerCustomLeft = settings.taskbarTickerCustomLeft,
                 taskbarTickerCustomTop = settings.taskbarTickerCustomTop,
                 taskbarTickerRotationIntervalSeconds = tickerRotationInterval,
-                TickerPosition = normalizedTickerPosition
+                TickerPosition = normalizedTickerPosition,
+                SelectedTimeZone = normalizedDisplayTimeZone
             };
             return true;
         }

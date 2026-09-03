@@ -13,7 +13,7 @@ namespace StockPerpTicker
         private const int EmptyCandleCount = 0;
         private const int ChartHeaderHeight = 46;
         private const int RightAxisWidth = 62;
-        private const int BottomAxisHeight = 28;
+        private const int BottomAxisHeight = 42;
         private const int LeftPadding = 8;
         private const int RightPadding = 2;
         private const int MinimumVisibleCandleCount = 20;
@@ -35,6 +35,18 @@ namespace StockPerpTicker
         private const long FiveDayMinutes = 7200L;
         private const long OneYearMinutes = 525600L;
         private const long OneMonthPeriodMinutes = 43200L;
+        private const long MaximumSessionMarkerPeriodMinutes = 60L;
+        private const int PreMarketStartMinutes = 240;
+        private const int RegularMarketStartMinutes = 570;
+        private const int AfterHoursStartMinutes = 960;
+        private const int OvernightStartMinutes = 1200;
+        private const float SessionBandTopOffset = 2f;
+        private const float SessionBandHeight = 16f;
+        private const float SessionLabelMinimumWidth = 42f;
+        private const float TimeLabelTopWithSessionBand = 20f;
+        private const float TimeLabelTopWithoutSessionBand = 10f;
+        private const int MinutesPerHour = 60;
+        private const int MaximumDisplayTimeCacheEntries = 6000;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
@@ -43,16 +55,24 @@ namespace StockPerpTicker
         private static readonly Color IntervalColor = Color.FromArgb(41, 98, 255);
         private static readonly Color IntervalFillColor = Color.FromArgb(34, 41, 98, 255);
         private static readonly Color TooltipBackgroundColor = Color.FromArgb(242, 19, 23, 34);
+        private static readonly Color OvernightSessionColor = Color.FromArgb(42, 69, 104, 220);
+        private static readonly Color PreMarketSessionColor = Color.FromArgb(48, 245, 158, 11);
+        private static readonly Color RegularMarketSessionColor = Color.FromArgb(48, 8, 153, 129);
+        private static readonly Color AfterHoursSessionColor = Color.FromArgb(46, 139, 92, 246);
+        private static readonly Color SessionSeparatorColor = Color.FromArgb(90, 148, 155, 170);
+        private static readonly Color SessionTextColor = Color.FromArgb(55, 61, 75);
         private readonly Font _smallFont;
         private readonly Font _axisFont;
         private readonly Font _intervalTitleFont;
         private readonly ContextMenuStrip _drawingMenu;
         private readonly ToolStripMenuItem _intervalStatisticsMenuItem;
         private readonly ToolStripMenuItem _deleteIntervalStatisticsMenuItem;
+        private readonly Dictionary<long, DateTime> _displayTimeCache;
         private Bitmap _chartLayer;
         private List<Candle> _candles;
         private MarketSnapshot _snapshot;
         private RangeDefinition _range;
+        private DisplayTimeZone _displayTimeZone;
         private decimal _tickSize;
         private int[] _movingAverages;
         private string _message;
@@ -97,8 +117,10 @@ namespace StockPerpTicker
             _deleteIntervalStatisticsMenuItem.Click += delegate { DeleteIntervalSelection(); };
             _drawingMenu.Items.Add(_intervalStatisticsMenuItem);
             _drawingMenu.Items.Add(_deleteIntervalStatisticsMenuItem);
+            _displayTimeCache = new Dictionary<long, DateTime>();
             _candles = new List<Candle>();
             _range = RangeDefinition.Find(RangeDefinition.DefaultKey);
+            _displayTimeZone = DisplayTimeZone.Beijing;
             _tickSize = 0.01m;
             _movingAverages = new int[0];
             _message = "正在加载行情…";
@@ -110,11 +132,20 @@ namespace StockPerpTicker
             MarketSnapshot snapshot,
             RangeDefinition range,
             decimal tickSize,
-            int[] movingAverages)
+            int[] movingAverages,
+            DisplayTimeZone displayTimeZone)
         {
             long rightmostVisibleTimestamp = GetRightmostVisibleTimestamp();
             bool followLatest = _rightOffset == NoViewportOffset;
             _candles = candles == null ? new List<Candle>() : new List<Candle>(candles);
+            _range = range ?? RangeDefinition.Find(RangeDefinition.DefaultKey);
+            if (_displayTimeZone != displayTimeZone
+                || _displayTimeCache.Count > MaximumDisplayTimeCacheEntries)
+            {
+                _displayTimeCache.Clear();
+            }
+
+            _displayTimeZone = displayTimeZone;
             UpdateIntervalStatistics();
 
             if (!followLatest && rightmostVisibleTimestamp > default(long))
@@ -124,7 +155,6 @@ namespace StockPerpTicker
 
             NormalizeViewport();
             _snapshot = snapshot;
-            _range = range ?? RangeDefinition.Find(RangeDefinition.DefaultKey);
             _tickSize = tickSize;
             _movingAverages = movingAverages == null ? new int[0] : (int[])movingAverages.Clone();
             _message = string.Empty;
@@ -446,7 +476,7 @@ namespace StockPerpTicker
             _intervalHovered = false;
             _contextMenuCandleTimestamp = null;
             Cursor = Cursors.Cross;
-            Logger.Info("开始区间统计，起点：" + FormatIntervalTime(_candles[startIndex].LocalTime));
+            Logger.Info("开始区间统计，起点：" + FormatIntervalTime(GetDisplayTime(_candles[startIndex])));
             Invalidate();
         }
 
@@ -621,8 +651,8 @@ namespace StockPerpTicker
             _intervalStatistics = new IntervalStatistics
             {
                 CandleCount = lastIndex - firstIndex + 1,
-                StartTime = firstCandle.LocalTime,
-                EndTime = lastCandle.LocalTime,
+                StartTime = GetDisplayTime(firstCandle),
+                EndTime = GetDisplayTime(lastCandle),
                 StartClose = firstCandle.Close,
                 EndClose = lastCandle.Close,
                 ChangeValue = changeValue,
@@ -1273,6 +1303,15 @@ namespace StockPerpTicker
                 return;
             }
 
+            bool showSessionBands = ShouldDrawUsMarketSessionBands();
+            if (showSessionBands)
+            {
+                DrawUsMarketSessionBands(graphics, plotArea, visibleStart, visibleCount);
+            }
+
+            float timeLabelTop = plotArea.Bottom + (showSessionBands
+                ? TimeLabelTopWithSessionBand
+                : TimeLabelTopWithoutSessionBand);
             using (SolidBrush brush = new SolidBrush(SecondaryTextColor))
             using (StringFormat centerFormat = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             {
@@ -1283,7 +1322,7 @@ namespace StockPerpTicker
                         visibleCount - 1,
                         (int)Math.Round((visibleCount - 1) * index / (float)Labels));
                     float x = plotArea.Left + plotArea.Width * index / (float)Labels;
-                    DateTime time = _candles[candleIndex].LocalTime;
+                    DateTime time = GetDisplayTime(_candles[candleIndex]);
                     string label;
                     if (_range.PeriodDurationMinutes >= OneMonthPeriodMinutes)
                     {
@@ -1306,9 +1345,152 @@ namespace StockPerpTicker
                         label = time.ToString("MM-dd", CultureInfo.InvariantCulture);
                     }
 
-                    graphics.DrawString(label, _axisFont, brush, new RectangleF(x - 38, plotArea.Bottom + 4, 76, 20), centerFormat);
+                    graphics.DrawString(label, _axisFont, brush, new RectangleF(x - 38, timeLabelTop, 76, 20), centerFormat);
                 }
             }
+        }
+
+        private bool ShouldDrawUsMarketSessionBands()
+        {
+            return _displayTimeZone == DisplayTimeZone.UsEastern
+                && _range != null
+                && _range.PeriodDurationMinutes <= MaximumSessionMarkerPeriodMinutes;
+        }
+
+        private void DrawUsMarketSessionBands(
+            Graphics graphics,
+            Rectangle plotArea,
+            int visibleStart,
+            int visibleCount)
+        {
+            float candleStep = plotArea.Width / (float)Math.Max(1, visibleCount);
+            int segmentStart = default(int);
+            UsMarketSession currentSession = GetUsMarketSession(GetDisplayTime(_candles[visibleStart]));
+            using (SolidBrush overnightBrush = new SolidBrush(OvernightSessionColor))
+            using (SolidBrush preMarketBrush = new SolidBrush(PreMarketSessionColor))
+            using (SolidBrush regularMarketBrush = new SolidBrush(RegularMarketSessionColor))
+            using (SolidBrush afterHoursBrush = new SolidBrush(AfterHoursSessionColor))
+            using (SolidBrush textBrush = new SolidBrush(SessionTextColor))
+            using (Pen separatorPen = new Pen(SessionSeparatorColor, 1f))
+            using (StringFormat centerFormat = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                for (int relativeIndex = 1; relativeIndex <= visibleCount; relativeIndex++)
+                {
+                    UsMarketSession nextSession = currentSession;
+                    if (relativeIndex < visibleCount)
+                    {
+                        nextSession = GetUsMarketSession(
+                            GetDisplayTime(_candles[visibleStart + relativeIndex]));
+                    }
+
+                    if (relativeIndex < visibleCount && nextSession == currentSession)
+                    {
+                        continue;
+                    }
+
+                    float segmentLeft = plotArea.Left + candleStep * segmentStart;
+                    float segmentRight = plotArea.Left + candleStep * relativeIndex;
+                    RectangleF band = new RectangleF(
+                        segmentLeft,
+                        plotArea.Bottom + SessionBandTopOffset,
+                        Math.Max(MinimumIntervalDrawingWidth, segmentRight - segmentLeft),
+                        SessionBandHeight);
+                    graphics.FillRectangle(
+                        GetSessionBrush(
+                            currentSession,
+                            overnightBrush,
+                            preMarketBrush,
+                            regularMarketBrush,
+                            afterHoursBrush),
+                        band);
+                    graphics.DrawLine(separatorPen, segmentLeft, band.Top, segmentLeft, band.Bottom);
+                    if (band.Width >= SessionLabelMinimumWidth)
+                    {
+                        graphics.DrawString(
+                            GetSessionLabel(currentSession),
+                            _smallFont,
+                            textBrush,
+                            band,
+                            centerFormat);
+                    }
+
+                    segmentStart = relativeIndex;
+                    currentSession = nextSession;
+                }
+            }
+        }
+
+        private static Brush GetSessionBrush(
+            UsMarketSession session,
+            Brush overnightBrush,
+            Brush preMarketBrush,
+            Brush regularMarketBrush,
+            Brush afterHoursBrush)
+        {
+            switch (session)
+            {
+                case UsMarketSession.PreMarket:
+                    return preMarketBrush;
+                case UsMarketSession.RegularMarket:
+                    return regularMarketBrush;
+                case UsMarketSession.AfterHours:
+                    return afterHoursBrush;
+                default:
+                    return overnightBrush;
+            }
+        }
+
+        private static string GetSessionLabel(UsMarketSession session)
+        {
+            switch (session)
+            {
+                case UsMarketSession.PreMarket:
+                    return "盘前";
+                case UsMarketSession.RegularMarket:
+                    return "盘中";
+                case UsMarketSession.AfterHours:
+                    return "盘后";
+                default:
+                    return "夜盘";
+            }
+        }
+
+        private static UsMarketSession GetUsMarketSession(DateTime easternTime)
+        {
+            int minutes = easternTime.Hour * MinutesPerHour + easternTime.Minute;
+            if (minutes >= OvernightStartMinutes || minutes < PreMarketStartMinutes)
+            {
+                return UsMarketSession.Overnight;
+            }
+
+            if (minutes < RegularMarketStartMinutes)
+            {
+                return UsMarketSession.PreMarket;
+            }
+
+            if (minutes < AfterHoursStartMinutes)
+            {
+                return UsMarketSession.RegularMarket;
+            }
+
+            return UsMarketSession.AfterHours;
+        }
+
+        private DateTime GetDisplayTime(Candle candle)
+        {
+            DateTime displayTime;
+            if (!_displayTimeCache.TryGetValue(candle.Timestamp, out displayTime))
+            {
+                displayTime = DisplayTimeConverter.FromUnixMilliseconds(candle.Timestamp, _displayTimeZone);
+                _displayTimeCache[candle.Timestamp] = displayTime;
+            }
+
+            return displayTime;
         }
 
         private void DrawCurrentPrice(
@@ -1361,7 +1543,7 @@ namespace StockPerpTicker
             decimal priceRatio = (decimal)(crosshairY - _lastPriceArea.Top) / Math.Max(1, _lastPriceArea.Height);
             decimal price = _lastMaximum - (_lastMaximum - _lastMinimum) * priceRatio;
             string priceLabel = FormatHelper.Price(price, _tickSize);
-            string timeLabel = FormatCrosshairTime(_candles[candleIndex].LocalTime);
+            string timeLabel = FormatCrosshairTime(GetDisplayTime(_candles[candleIndex]));
 
             using (Pen crosshairPen = new Pen(SecondaryTextColor, 1f))
             using (SolidBrush labelBrush = new SolidBrush(TextColor))
@@ -1389,9 +1571,12 @@ namespace StockPerpTicker
                 float timeLeft = Math.Max(
                     _lastPlotArea.Left,
                     Math.Min(_lastPlotArea.Right - timeWidth, crosshairX - timeWidth / 2f));
+                float timeTagTop = _lastPlotArea.Bottom + (ShouldDrawUsMarketSessionBands()
+                    ? TimeLabelTopWithSessionBand
+                    : TimeLabelTopWithoutSessionBand);
                 RectangleF timeTag = new RectangleF(
                     timeLeft,
-                    _lastPlotArea.Bottom + 2,
+                    timeTagTop,
                     timeWidth,
                     CrosshairLabelHeight);
                 graphics.FillRectangle(labelBrush, timeTag);
@@ -1443,6 +1628,14 @@ namespace StockPerpTicker
             internal decimal Maximum { get; set; }
             internal decimal Minimum { get; set; }
             internal decimal TotalVolume { get; set; }
+        }
+
+        private enum UsMarketSession
+        {
+            Overnight,
+            PreMarket,
+            RegularMarket,
+            AfterHours
         }
 
         private static float PriceToY(decimal price, Rectangle area, decimal minimum, decimal maximum)

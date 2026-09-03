@@ -15,6 +15,8 @@ namespace StockPerpTicker
         private const int DefaultRenderIntervalMilliseconds = 1000;
         private const int UnspecifiedWindowCoordinate = -1;
         private const int MinimumVisibleWindowOverlap = 100;
+        private const string BeijingClockLabel = "北京";
+        private const string UsEasternClockLabel = "美东";
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
@@ -249,7 +251,7 @@ namespace StockPerpTicker
             _clockLabel = new Label
             {
                 Dock = DockStyle.Right,
-                Width = 122,
+                Width = 178,
                 TextAlign = ContentAlignment.MiddleRight,
                 Padding = new Padding(0, 0, 8, 0),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point)
@@ -965,7 +967,8 @@ namespace StockPerpTicker
                     _snapshot,
                     _currentRange,
                     _instrument.TickSize,
-                    _settings.movingAverages);
+                    _settings.movingAverages,
+                    _settings.SelectedTimeZone);
                 if (_taskbarTicker != null)
                 {
                     _taskbarTicker.UpdateMarket(
@@ -1076,11 +1079,16 @@ namespace StockPerpTicker
 
         private void UpdateClock()
         {
-            DateTime now = DateTime.Now;
-            TimeSpan offset = TimeZoneInfo.Local.GetUtcOffset(now);
+            DateTime utcNow = DateTime.UtcNow;
+            DateTime now = DisplayTimeConverter.FromUtc(utcNow, _settings.SelectedTimeZone);
+            TimeSpan offset = DisplayTimeConverter.GetUtcOffset(utcNow, _settings.SelectedTimeZone);
             string sign = offset < TimeSpan.Zero ? "-" : "+";
             TimeSpan absolute = offset.Duration();
-            _clockLabel.Text = now.ToString("HH:mm:ss") + " UTC" + sign + absolute.Hours.ToString();
+            string zoneLabel = _settings.SelectedTimeZone == DisplayTimeZone.UsEastern
+                ? UsEasternClockLabel
+                : BeijingClockLabel;
+            _clockLabel.Text = now.ToString("HH:mm:ss") + " " + zoneLabel
+                + " UTC" + sign + absolute.Hours.ToString();
         }
 
         private async Task ShowSettingsAsync()
@@ -1156,6 +1164,7 @@ namespace StockPerpTicker
                 : candidate.instrumentIds[0];
             bool instrumentChanged = _instrument == null
                 || !string.Equals(_instrument.InstrumentId, targetInstrumentId, StringComparison.OrdinalIgnoreCase);
+            bool displayTimeZoneChanged = _settings.SelectedTimeZone != candidate.SelectedTimeZone;
             try
             {
                 Dictionary<string, InstrumentInfo> validatedInstruments = await ValidateInstrumentSetAsync(
@@ -1173,6 +1182,11 @@ namespace StockPerpTicker
                 _miniTickerRotationTimer.Interval = _settings.taskbarTickerRotationIntervalSeconds * 1000;
                 _miniTickerIndex = default(int);
                 ConfigureTaskbarTicker();
+                UpdateClock();
+                if (displayTimeZoneChanged)
+                {
+                    Logger.Info("时间显示时区已切换为：" + _settings.timeZone);
+                }
 
                 if (instrumentChanged)
                 {

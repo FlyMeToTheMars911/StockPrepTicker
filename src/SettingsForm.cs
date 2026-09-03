@@ -9,6 +9,8 @@ namespace StockPerpTicker
     internal sealed class SettingsForm : Form
     {
         private const int DefaultComboBoxIndex = 0;
+        private const int BeijingTimeZoneIndex = 0;
+        private const int UsEasternTimeZoneIndex = 1;
         private const string PositionCostFormat = "0.############################";
         private static readonly Color AccentColor = Color.FromArgb(8, 153, 129);
         private static readonly Color ErrorColor = Color.FromArgb(192, 57, 43);
@@ -18,6 +20,7 @@ namespace StockPerpTicker
         private readonly TextBox _positionCostInput;
         private readonly Button _removeInstrumentButton;
         private readonly NumericUpDown _refreshIntervalInput;
+        private readonly ComboBox _timeZoneComboBox;
         private readonly ComboBox _candlePeriodComboBox;
         private readonly ComboBox _timeRangeComboBox;
         private readonly Label _chartConfigHint;
@@ -194,7 +197,26 @@ namespace StockPerpTicker
             refreshGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(153, 28), Text = "毫秒" });
             refreshGroup.Controls.Add(CreateHint("仅影响界面绘制，网络行情会持续接收", new Point(211, 27), new Size(235, 21)));
 
-            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 316), new Size(464, 108));
+            GroupBox timeZoneGroup = CreateGroup("时间显示", new Point(18, 316), new Size(464, 78));
+            timeZoneGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "时区" });
+            _timeZoneComboBox = new ComboBox
+            {
+                Location = new Point(60, 23),
+                Size = new Size(190, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            _timeZoneComboBox.Items.AddRange(new object[]
+            {
+                "北京时间（UTC+8）",
+                "美东时间（自动夏令时）"
+            });
+            timeZoneGroup.Controls.Add(_timeZoneComboBox);
+            timeZoneGroup.Controls.Add(CreateHint(
+                "同步应用到底部时钟、K 线时间轴和区间统计",
+                new Point(266, 27),
+                new Size(180, 36)));
+
+            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 402), new Size(464, 108));
             chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "周期" });
             _candlePeriodComboBox = new ComboBox
             {
@@ -234,7 +256,7 @@ namespace StockPerpTicker
                 UpdateChartConfigHint();
             };
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 432), new Size(464, 84));
+            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 518), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -255,7 +277,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 524), new Size(464, 154));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 610), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -301,6 +323,7 @@ namespace StockPerpTicker
 
             content.Controls.Add(instrumentGroup);
             content.Controls.Add(refreshGroup);
+            content.Controls.Add(timeZoneGroup);
             content.Controls.Add(chartGroup);
             content.Controls.Add(movingAverageGroup);
             content.Controls.Add(taskbarTickerGroup);
@@ -383,6 +406,9 @@ namespace StockPerpTicker
                 SettingsStore.MinimumRefreshIntervalMilliseconds,
                 Math.Min(SettingsStore.MaximumRefreshIntervalMilliseconds, settings.refreshIntervalMilliseconds));
             _refreshIntervalInput.Value = refreshInterval;
+            _timeZoneComboBox.SelectedIndex = settings.SelectedTimeZone == DisplayTimeZone.UsEastern
+                ? UsEasternTimeZoneIndex
+                : BeijingTimeZoneIndex;
             SelectCandlePeriod(settings.candlePeriod);
             SelectTimeRange(settings.timeRange);
             UpdateChartConfigHint();
@@ -534,6 +560,7 @@ namespace StockPerpTicker
                 refreshIntervalMilliseconds = decimal.ToInt32(_refreshIntervalInput.Value),
                 candlePeriod = GetSelectedCandlePeriodKey(),
                 timeRange = GetSelectedTimeRangeKey(),
+                timeZone = GetSelectedTimeZone(),
                 movingAverages = movingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
                 taskbarTickerPosition = GetSelectedTickerPosition(),
@@ -583,6 +610,13 @@ namespace StockPerpTicker
         {
             RangeDefinition range = _timeRangeComboBox.SelectedItem as RangeDefinition;
             return range == null ? null : range.Key;
+        }
+
+        private string GetSelectedTimeZone()
+        {
+            return _timeZoneComboBox.SelectedIndex == UsEasternTimeZoneIndex
+                ? SettingsStore.UsEasternTimeZone
+                : SettingsStore.BeijingTimeZone;
         }
 
         private bool AddInstrument()
