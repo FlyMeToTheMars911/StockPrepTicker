@@ -24,6 +24,13 @@ namespace StockPerpTicker
         private const float ZoomStep = 0.80f;
         private const int CrosshairTimeLabelHorizontalPadding = 6;
         private const int CrosshairLabelHeight = 20;
+        private const int IntervalTooltipWidth = 320;
+        private const int IntervalTooltipHeight = 154;
+        private const int IntervalTooltipMargin = 10;
+        private const int IntervalTooltipPadding = 10;
+        private const int IntervalTooltipTitleHeight = 22;
+        private const int IntervalTooltipLineHeight = 19;
+        private const float MinimumIntervalDrawingWidth = 1f;
         private const long OneDayMinutes = 1440L;
         private const long FiveDayMinutes = 7200L;
         private const long OneYearMinutes = 525600L;
@@ -33,8 +40,15 @@ namespace StockPerpTicker
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
         private static readonly Color GridColor = Color.FromArgb(224, 227, 235);
+        private static readonly Color IntervalColor = Color.FromArgb(41, 98, 255);
+        private static readonly Color IntervalFillColor = Color.FromArgb(34, 41, 98, 255);
+        private static readonly Color TooltipBackgroundColor = Color.FromArgb(242, 19, 23, 34);
         private readonly Font _smallFont;
         private readonly Font _axisFont;
+        private readonly Font _intervalTitleFont;
+        private readonly ContextMenuStrip _drawingMenu;
+        private readonly ToolStripMenuItem _intervalStatisticsMenuItem;
+        private readonly ToolStripMenuItem _deleteIntervalStatisticsMenuItem;
         private Bitmap _chartLayer;
         private List<Candle> _candles;
         private MarketSnapshot _snapshot;
@@ -58,6 +72,13 @@ namespace StockPerpTicker
         private decimal _lastMinimum;
         private decimal _lastMaximum;
         private bool _lastLayoutValid;
+        private long? _contextMenuCandleTimestamp;
+        private bool _contextMenuInsideInterval;
+        private long? _intervalStartTimestamp;
+        private long? _intervalEndTimestamp;
+        private bool _isSelectingInterval;
+        private bool _intervalHovered;
+        private IntervalStatistics _intervalStatistics;
 
         internal ChartControl()
         {
@@ -68,6 +89,14 @@ namespace StockPerpTicker
             BackColor = Color.White;
             _smallFont = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point);
             _axisFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
+            _intervalTitleFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
+            _drawingMenu = new ContextMenuStrip { ShowImageMargin = false };
+            _intervalStatisticsMenuItem = new ToolStripMenuItem("区间统计");
+            _intervalStatisticsMenuItem.Click += delegate { BeginIntervalSelection(); };
+            _deleteIntervalStatisticsMenuItem = new ToolStripMenuItem("删除统计");
+            _deleteIntervalStatisticsMenuItem.Click += delegate { DeleteIntervalSelection(); };
+            _drawingMenu.Items.Add(_intervalStatisticsMenuItem);
+            _drawingMenu.Items.Add(_deleteIntervalStatisticsMenuItem);
             _candles = new List<Candle>();
             _range = RangeDefinition.Find(RangeDefinition.DefaultKey);
             _tickSize = 0.01m;
@@ -86,6 +115,8 @@ namespace StockPerpTicker
             long rightmostVisibleTimestamp = GetRightmostVisibleTimestamp();
             bool followLatest = _rightOffset == NoViewportOffset;
             _candles = candles == null ? new List<Candle>() : new List<Candle>(candles);
+            UpdateIntervalStatistics();
+
             if (!followLatest && rightmostVisibleTimestamp > default(long))
             {
                 RestoreRightOffset(rightmostVisibleTimestamp);
@@ -106,6 +137,7 @@ namespace StockPerpTicker
             _visibleCandleCount = FullViewportCandleCount;
             _rightOffset = NoViewportOffset;
             _hoverVisible = false;
+            ClearIntervalSelection("视图重置");
             MarkChartLayerDirty();
         }
 
@@ -129,6 +161,8 @@ namespace StockPerpTicker
             {
                 _smallFont.Dispose();
                 _axisFont.Dispose();
+                _intervalTitleFont.Dispose();
+                _drawingMenu.Dispose();
                 if (_chartLayer != null)
                 {
                     _chartLayer.Dispose();
@@ -161,7 +195,9 @@ namespace StockPerpTicker
             }
 
             e.Graphics.DrawImageUnscaled(_chartLayer, Point.Empty);
+            DrawIntervalSelection(e.Graphics);
             DrawCrosshair(e.Graphics);
+            DrawIntervalTooltip(e.Graphics);
         }
 
         protected override void OnSizeChanged(EventArgs e)
@@ -179,9 +215,10 @@ namespace StockPerpTicker
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (!_isDragging && _hoverVisible)
+            if (!_isDragging && (_hoverVisible || _intervalHovered))
             {
                 _hoverVisible = false;
+                _intervalHovered = false;
                 Invalidate();
             }
         }
@@ -193,12 +230,41 @@ namespace StockPerpTicker
             Rectangle priceArea;
             Rectangle volumeArea;
             GetChartAreas(ClientRectangle, out plotArea, out priceArea, out volumeArea);
+            if (e.Button == MouseButtons.Right)
+            {
+                _contextMenuCandleTimestamp = null;
+                _contextMenuInsideInterval = plotArea.Contains(e.Location)
+                    && IsPointInVisibleInterval(e.Location);
+                int contextCandleIndex;
+                if (priceArea.Contains(e.Location) && TryGetCandleIndexAtX(e.X, out contextCandleIndex))
+                {
+                    _contextMenuCandleTimestamp = _candles[contextCandleIndex].Timestamp;
+                }
+
+                if (_contextMenuCandleTimestamp.HasValue || _contextMenuInsideInterval)
+                {
+                    Focus();
+                }
+
+                return;
+            }
+
             if (e.Button != MouseButtons.Left || !plotArea.Contains(e.Location) || _candles.Count == EmptyCandleCount)
             {
                 return;
             }
 
             Focus();
+            if (_isSelectingInterval)
+            {
+                if (priceArea.Contains(e.Location))
+                {
+                    CompleteIntervalSelection(e.X);
+                }
+
+                return;
+            }
+
             _isDragging = true;
             _dragStartPoint = e.Location;
             _dragStartRightOffset = _rightOffset;
@@ -221,6 +287,9 @@ namespace StockPerpTicker
                 || (hoverVisible && e.Location != _hoverPoint);
             _hoverPoint = e.Location;
             _hoverVisible = hoverVisible;
+            bool intervalHovered = !_isSelectingInterval && IsPointInVisibleInterval(e.Location);
+            bool intervalHoverChanged = intervalHovered != _intervalHovered;
+            _intervalHovered = intervalHovered;
 
             if (_isDragging)
             {
@@ -241,7 +310,12 @@ namespace StockPerpTicker
                 }
             }
 
-            if (hoverChanged)
+            if (_isSelectingInterval)
+            {
+                Cursor = Cursors.Cross;
+            }
+
+            if (hoverChanged || intervalHoverChanged)
             {
                 Invalidate();
             }
@@ -250,6 +324,20 @@ namespace StockPerpTicker
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Right)
+            {
+                bool canStartIntervalStatistics = _contextMenuCandleTimestamp.HasValue;
+                bool canDeleteIntervalStatistics = _contextMenuInsideInterval;
+                _intervalStatisticsMenuItem.Available = canStartIntervalStatistics;
+                _deleteIntervalStatisticsMenuItem.Available = canDeleteIntervalStatistics;
+                if (canStartIntervalStatistics || canDeleteIntervalStatistics)
+                {
+                    _drawingMenu.Show(this, e.Location);
+                }
+
+                return;
+            }
+
             if (e.Button != MouseButtons.Left || !_isDragging)
             {
                 return;
@@ -317,6 +405,483 @@ namespace StockPerpTicker
             _hoverPoint = e.Location;
             _hoverVisible = priceArea.Contains(e.Location);
             MarkChartLayerDirty();
+        }
+
+        protected override bool IsInputKey(Keys keyData)
+        {
+            return keyData == Keys.Escape || base.IsInputKey(keyData);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode != Keys.Escape
+                || (!_isSelectingInterval && !_intervalStartTimestamp.HasValue && !_intervalEndTimestamp.HasValue))
+            {
+                return;
+            }
+
+            ClearIntervalSelection("用户取消");
+            e.Handled = true;
+        }
+
+        private void BeginIntervalSelection()
+        {
+            if (!_contextMenuCandleTimestamp.HasValue)
+            {
+                return;
+            }
+
+            int startIndex = FindCandleIndexByTimestamp(_contextMenuCandleTimestamp.Value);
+            if (startIndex == MissingCandleIndex)
+            {
+                _contextMenuCandleTimestamp = null;
+                return;
+            }
+
+            _intervalStartTimestamp = _candles[startIndex].Timestamp;
+            _intervalEndTimestamp = null;
+            _intervalStatistics = null;
+            _isSelectingInterval = true;
+            _intervalHovered = false;
+            _contextMenuCandleTimestamp = null;
+            Cursor = Cursors.Cross;
+            Logger.Info("开始区间统计，起点：" + FormatIntervalTime(_candles[startIndex].LocalTime));
+            Invalidate();
+        }
+
+        private void DeleteIntervalSelection()
+        {
+            if (!_contextMenuInsideInterval)
+            {
+                return;
+            }
+
+            ClearIntervalSelection("用户删除");
+        }
+
+        private void CompleteIntervalSelection(int x)
+        {
+            int endIndex;
+            if (!_intervalStartTimestamp.HasValue || !TryGetCandleIndexAtX(x, out endIndex))
+            {
+                return;
+            }
+
+            int startIndex = FindCandleIndexByTimestamp(_intervalStartTimestamp.Value);
+            if (startIndex == MissingCandleIndex)
+            {
+                ClearIntervalSelection("起点已不在当前 K 线数据中");
+                return;
+            }
+
+            int firstIndex = Math.Min(startIndex, endIndex);
+            int lastIndex = Math.Max(startIndex, endIndex);
+            _intervalStartTimestamp = _candles[firstIndex].Timestamp;
+            _intervalEndTimestamp = _candles[lastIndex].Timestamp;
+            _isSelectingInterval = false;
+            Cursor = Cursors.Default;
+            UpdateIntervalStatistics();
+            if (_intervalStatistics != null)
+            {
+                Logger.Info(
+                    "完成区间统计：" + _intervalStatistics.CandleCount + " 根 K 线，涨跌 "
+                    + FormatSignedPrice(_intervalStatistics.ChangeValue) + "（"
+                    + FormatSignedPercentage(_intervalStatistics.ChangePercent) + "）");
+            }
+
+            Invalidate();
+        }
+
+        private void ClearIntervalSelection(string reason)
+        {
+            bool hadSelection = _isSelectingInterval
+                || _intervalStartTimestamp.HasValue
+                || _intervalEndTimestamp.HasValue;
+            _contextMenuCandleTimestamp = null;
+            _contextMenuInsideInterval = false;
+            _intervalStartTimestamp = null;
+            _intervalEndTimestamp = null;
+            _intervalStatistics = null;
+            _isSelectingInterval = false;
+            _intervalHovered = false;
+            if (_drawingMenu.Visible)
+            {
+                _drawingMenu.Close(ToolStripDropDownCloseReason.CloseCalled);
+            }
+
+            if (!_isDragging)
+            {
+                Cursor = Cursors.Default;
+            }
+
+            if (hadSelection && !string.IsNullOrEmpty(reason))
+            {
+                Logger.Info("区间统计已清除：" + reason + "。");
+            }
+
+            Invalidate();
+        }
+
+        private bool TryGetCandleIndexAtX(int x, out int candleIndex)
+        {
+            candleIndex = MissingCandleIndex;
+            if (_candles.Count == EmptyCandleCount)
+            {
+                return false;
+            }
+
+            Rectangle plotArea;
+            Rectangle priceArea;
+            Rectangle volumeArea;
+            GetChartAreas(ClientRectangle, out plotArea, out priceArea, out volumeArea);
+            int visibleStart;
+            int visibleCount;
+            GetViewport(out visibleStart, out visibleCount);
+            float candleStep = plotArea.Width / (float)Math.Max(1, visibleCount);
+            int relativeIndex = Math.Max(
+                default(int),
+                Math.Min(visibleCount - 1, (int)Math.Floor((x - plotArea.Left) / candleStep)));
+            candleIndex = visibleStart + relativeIndex;
+            return candleIndex >= default(int) && candleIndex < _candles.Count;
+        }
+
+        private int FindCandleIndexByTimestamp(long timestamp)
+        {
+            int low = default(int);
+            int high = _candles.Count - 1;
+            while (low <= high)
+            {
+                int middle = low + (high - low) / 2;
+                long middleTimestamp = _candles[middle].Timestamp;
+                if (middleTimestamp == timestamp)
+                {
+                    return middle;
+                }
+
+                if (middleTimestamp < timestamp)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return MissingCandleIndex;
+        }
+
+        private void UpdateIntervalStatistics()
+        {
+            _intervalStatistics = null;
+            if (!_intervalStartTimestamp.HasValue)
+            {
+                return;
+            }
+
+            int startIndex = FindCandleIndexByTimestamp(_intervalStartTimestamp.Value);
+            if (startIndex == MissingCandleIndex)
+            {
+                ClearIntervalSelection("区间起点已不在当前 K 线数据中");
+                return;
+            }
+
+            if (!_intervalEndTimestamp.HasValue)
+            {
+                return;
+            }
+
+            int endIndex = FindCandleIndexByTimestamp(_intervalEndTimestamp.Value);
+            if (endIndex == MissingCandleIndex)
+            {
+                ClearIntervalSelection("区间终点已不在当前 K 线数据中");
+                return;
+            }
+
+            int firstIndex = Math.Min(startIndex, endIndex);
+            int lastIndex = Math.Max(startIndex, endIndex);
+            Candle firstCandle = _candles[firstIndex];
+            Candle lastCandle = _candles[lastIndex];
+            decimal maximum = firstCandle.High;
+            decimal minimum = firstCandle.Low;
+            decimal totalVolume = decimal.Zero;
+            for (int index = firstIndex; index <= lastIndex; index++)
+            {
+                Candle candle = _candles[index];
+                maximum = Math.Max(maximum, candle.High);
+                minimum = Math.Min(minimum, candle.Low);
+                totalVolume += candle.Volume;
+            }
+
+            decimal changeValue = lastCandle.Close - firstCandle.Close;
+            decimal changePercent = firstCandle.Close == decimal.Zero
+                ? decimal.Zero
+                : changeValue / firstCandle.Close * 100m;
+            _intervalStatistics = new IntervalStatistics
+            {
+                CandleCount = lastIndex - firstIndex + 1,
+                StartTime = firstCandle.LocalTime,
+                EndTime = lastCandle.LocalTime,
+                StartClose = firstCandle.Close,
+                EndClose = lastCandle.Close,
+                ChangeValue = changeValue,
+                ChangePercent = changePercent,
+                Maximum = maximum,
+                Minimum = minimum,
+                TotalVolume = totalVolume
+            };
+        }
+
+        private bool TryGetVisibleIntervalBounds(out RectangleF bounds)
+        {
+            bounds = RectangleF.Empty;
+            if (!_lastLayoutValid || !_intervalStartTimestamp.HasValue || !_intervalEndTimestamp.HasValue)
+            {
+                return false;
+            }
+
+            int startIndex = FindCandleIndexByTimestamp(_intervalStartTimestamp.Value);
+            int endIndex = FindCandleIndexByTimestamp(_intervalEndTimestamp.Value);
+            if (startIndex == MissingCandleIndex || endIndex == MissingCandleIndex)
+            {
+                return false;
+            }
+
+            int firstIndex = Math.Min(startIndex, endIndex);
+            int lastIndex = Math.Max(startIndex, endIndex);
+            int visibleEndIndex = _lastVisibleStart + _lastVisibleCount - 1;
+            if (lastIndex < _lastVisibleStart || firstIndex > visibleEndIndex)
+            {
+                return false;
+            }
+
+            int clippedFirstIndex = Math.Max(firstIndex, _lastVisibleStart);
+            int clippedLastIndex = Math.Min(lastIndex, visibleEndIndex);
+            float candleStep = _lastPlotArea.Width / (float)Math.Max(1, _lastVisibleCount);
+            float left = _lastPlotArea.Left + candleStep * (clippedFirstIndex - _lastVisibleStart);
+            float right = _lastPlotArea.Left + candleStep * (clippedLastIndex - _lastVisibleStart + 1);
+            bounds = new RectangleF(
+                left,
+                _lastPlotArea.Top,
+                Math.Max(MinimumIntervalDrawingWidth, right - left),
+                _lastPlotArea.Height);
+            return true;
+        }
+
+        private bool IsPointInVisibleInterval(Point point)
+        {
+            RectangleF bounds;
+            return _lastPlotArea.Contains(point)
+                && TryGetVisibleIntervalBounds(out bounds)
+                && bounds.Contains(point.X, point.Y);
+        }
+
+        private void DrawIntervalSelection(Graphics graphics)
+        {
+            if (!_lastLayoutValid)
+            {
+                return;
+            }
+
+            RectangleF intervalBounds;
+            if (TryGetVisibleIntervalBounds(out intervalBounds))
+            {
+                using (SolidBrush fillBrush = new SolidBrush(IntervalFillColor))
+                using (Pen borderPen = new Pen(IntervalColor, 1.5f))
+                {
+                    borderPen.DashStyle = DashStyle.Dash;
+                    graphics.FillRectangle(fillBrush, intervalBounds);
+                    graphics.DrawRectangle(
+                        borderPen,
+                        intervalBounds.Left,
+                        intervalBounds.Top,
+                        intervalBounds.Width,
+                        Math.Max(MinimumIntervalDrawingWidth, intervalBounds.Height - MinimumIntervalDrawingWidth));
+                }
+            }
+
+            if (!_isSelectingInterval || !_intervalStartTimestamp.HasValue)
+            {
+                return;
+            }
+
+            int startIndex = FindCandleIndexByTimestamp(_intervalStartTimestamp.Value);
+            int visibleEndIndex = _lastVisibleStart + _lastVisibleCount - 1;
+            if (startIndex < _lastVisibleStart || startIndex > visibleEndIndex)
+            {
+                return;
+            }
+
+            float candleStep = _lastPlotArea.Width / (float)Math.Max(1, _lastVisibleCount);
+            float markerX = _lastPlotArea.Left
+                + candleStep * (startIndex - _lastVisibleStart + 0.5f);
+            using (Pen markerPen = new Pen(IntervalColor, 1.5f))
+            using (SolidBrush labelBrush = new SolidBrush(IntervalColor))
+            using (SolidBrush textBrush = new SolidBrush(Color.White))
+            {
+                markerPen.DashStyle = DashStyle.Dash;
+                graphics.DrawLine(markerPen, markerX, _lastPlotArea.Top, markerX, _lastPlotArea.Bottom);
+                const float HintWidth = 154f;
+                const float HintHeight = 22f;
+                float hintLeft = Math.Max(
+                    _lastPlotArea.Left,
+                    Math.Min(_lastPlotArea.Right - HintWidth, markerX + 5f));
+                RectangleF hintBounds = new RectangleF(hintLeft, _lastPlotArea.Top + 4f, HintWidth, HintHeight);
+                graphics.FillRectangle(labelBrush, hintBounds);
+                graphics.DrawString("点击另一根 K 线完成", _smallFont, textBrush, hintBounds);
+            }
+        }
+
+        private void DrawIntervalTooltip(Graphics graphics)
+        {
+            if (!_intervalHovered || _intervalStatistics == null)
+            {
+                return;
+            }
+
+            float left = _hoverPoint.X + IntervalTooltipMargin;
+            if (left + IntervalTooltipWidth > ClientSize.Width - IntervalTooltipMargin)
+            {
+                left = _hoverPoint.X - IntervalTooltipWidth - IntervalTooltipMargin;
+            }
+
+            left = Math.Max(
+                IntervalTooltipMargin,
+                Math.Min(ClientSize.Width - IntervalTooltipWidth - IntervalTooltipMargin, left));
+            float top = _hoverPoint.Y + IntervalTooltipMargin;
+            if (top + IntervalTooltipHeight > ClientSize.Height - IntervalTooltipMargin)
+            {
+                top = _hoverPoint.Y - IntervalTooltipHeight - IntervalTooltipMargin;
+            }
+
+            top = Math.Max(
+                IntervalTooltipMargin,
+                Math.Min(ClientSize.Height - IntervalTooltipHeight - IntervalTooltipMargin, top));
+            RectangleF tooltipBounds = new RectangleF(left, top, IntervalTooltipWidth, IntervalTooltipHeight);
+            Color changeColor = _intervalStatistics.ChangeValue >= decimal.Zero ? UpColor : DownColor;
+            using (SolidBrush backgroundBrush = new SolidBrush(TooltipBackgroundColor))
+            using (Pen borderPen = new Pen(Color.FromArgb(90, Color.White), 1f))
+            using (SolidBrush primaryBrush = new SolidBrush(Color.White))
+            using (SolidBrush secondaryBrush = new SolidBrush(Color.FromArgb(200, 210, 216, 230)))
+            using (SolidBrush changeBrush = new SolidBrush(changeColor))
+            using (StringFormat rowFormat = new StringFormat
+            {
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                graphics.FillRectangle(backgroundBrush, tooltipBounds);
+                graphics.DrawRectangle(
+                    borderPen,
+                    tooltipBounds.Left,
+                    tooltipBounds.Top,
+                    tooltipBounds.Width,
+                    tooltipBounds.Height);
+                float textLeft = tooltipBounds.Left + IntervalTooltipPadding;
+                float textWidth = tooltipBounds.Width - IntervalTooltipPadding * 2;
+                float textTop = tooltipBounds.Top + 7f;
+                graphics.DrawString(
+                    "区间统计",
+                    _intervalTitleFont,
+                    primaryBrush,
+                    new RectangleF(textLeft, textTop, textWidth, IntervalTooltipTitleHeight),
+                    rowFormat);
+                textTop += IntervalTooltipTitleHeight;
+                DrawIntervalTooltipRow(
+                    graphics,
+                    FormatIntervalTime(_intervalStatistics.StartTime) + "  →  "
+                        + FormatIntervalTime(_intervalStatistics.EndTime),
+                    secondaryBrush,
+                    rowFormat,
+                    textLeft,
+                    textTop,
+                    textWidth);
+                textTop += IntervalTooltipLineHeight;
+                DrawIntervalTooltipRow(
+                    graphics,
+                    "K 线数量  " + _intervalStatistics.CandleCount + "    成交量  "
+                        + FormatHelper.CompactNumber(_intervalStatistics.TotalVolume),
+                    primaryBrush,
+                    rowFormat,
+                    textLeft,
+                    textTop,
+                    textWidth);
+                textTop += IntervalTooltipLineHeight;
+                DrawIntervalTooltipRow(
+                    graphics,
+                    "起始收盘  " + FormatHelper.Price(_intervalStatistics.StartClose, _tickSize)
+                        + "    结束收盘  " + FormatHelper.Price(_intervalStatistics.EndClose, _tickSize),
+                    primaryBrush,
+                    rowFormat,
+                    textLeft,
+                    textTop,
+                    textWidth);
+                textTop += IntervalTooltipLineHeight;
+                DrawIntervalTooltipRow(
+                    graphics,
+                    "涨跌值  " + FormatSignedPrice(_intervalStatistics.ChangeValue)
+                        + "    涨跌幅  " + FormatSignedPercentage(_intervalStatistics.ChangePercent),
+                    changeBrush,
+                    rowFormat,
+                    textLeft,
+                    textTop,
+                    textWidth);
+                textTop += IntervalTooltipLineHeight;
+                DrawIntervalTooltipRow(
+                    graphics,
+                    "最高值  " + FormatHelper.Price(_intervalStatistics.Maximum, _tickSize)
+                        + "    最低值  " + FormatHelper.Price(_intervalStatistics.Minimum, _tickSize),
+                    primaryBrush,
+                    rowFormat,
+                    textLeft,
+                    textTop,
+                    textWidth);
+            }
+        }
+
+        private void DrawIntervalTooltipRow(
+            Graphics graphics,
+            string text,
+            Brush brush,
+            StringFormat format,
+            float left,
+            float top,
+            float width)
+        {
+            graphics.DrawString(
+                text,
+                _smallFont,
+                brush,
+                new RectangleF(left, top, width, IntervalTooltipLineHeight),
+                format);
+        }
+
+        private string FormatSignedPrice(decimal value)
+        {
+            string prefix = value > decimal.Zero ? "+" : string.Empty;
+            return prefix + FormatHelper.Price(value, _tickSize);
+        }
+
+        private static string FormatSignedPercentage(decimal value)
+        {
+            string prefix = value > decimal.Zero ? "+" : string.Empty;
+            return prefix + value.ToString("0.00", CultureInfo.InvariantCulture) + "%";
+        }
+
+        private string FormatIntervalTime(DateTime time)
+        {
+            if (_range.PeriodDurationMinutes >= OneMonthPeriodMinutes)
+            {
+                return time.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+            }
+
+            if (_range.PeriodDurationMinutes >= OneDayMinutes)
+            {
+                return time.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            }
+
+            return time.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         }
 
         private void EnsureChartLayer(Size size)
@@ -864,6 +1429,20 @@ namespace StockPerpTicker
             {
                 graphics.DrawString(message, messageFont, brush, new RectangleF(28, 28, client.Width - 56, client.Height - 56), format);
             }
+        }
+
+        private sealed class IntervalStatistics
+        {
+            internal int CandleCount { get; set; }
+            internal DateTime StartTime { get; set; }
+            internal DateTime EndTime { get; set; }
+            internal decimal StartClose { get; set; }
+            internal decimal EndClose { get; set; }
+            internal decimal ChangeValue { get; set; }
+            internal decimal ChangePercent { get; set; }
+            internal decimal Maximum { get; set; }
+            internal decimal Minimum { get; set; }
+            internal decimal TotalVolume { get; set; }
         }
 
         private static float PriceToY(decimal price, Rectangle area, decimal minimum, decimal maximum)
