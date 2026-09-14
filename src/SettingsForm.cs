@@ -20,6 +20,7 @@ namespace StockPerpTicker
         private readonly TextBox _positionCostInput;
         private readonly Button _removeInstrumentButton;
         private readonly NumericUpDown _refreshIntervalInput;
+        private readonly NumericUpDown _detailsTransparencyInput;
         private readonly ComboBox _timeZoneComboBox;
         private readonly ComboBox _candlePeriodComboBox;
         private readonly ComboBox _timeRangeComboBox;
@@ -216,7 +217,7 @@ namespace StockPerpTicker
                 new Point(266, 27),
                 new Size(180, 36)));
 
-            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 402), new Size(464, 108));
+            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 402), new Size(464, 146));
             chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "周期" });
             _candlePeriodComboBox = new ComboBox
             {
@@ -245,6 +246,20 @@ namespace StockPerpTicker
             chartGroup.Controls.Add(_timeRangeComboBox);
             _chartConfigHint = CreateHint(string.Empty, new Point(16, 57), new Size(430, 40));
             chartGroup.Controls.Add(_chartConfigHint);
+            chartGroup.Controls.Add(new Label
+            {
+                AutoSize = true, Location = new Point(16, 112), Text = "详情背景透明度"
+            });
+            _detailsTransparencyInput = new NumericUpDown
+            {
+                Location = new Point(128, 107), Size = new Size(65, 25),
+                Minimum = SettingsStore.MinimumCandleDetailsTransparencyPercent,
+                Maximum = SettingsStore.MaximumCandleDetailsTransparencyPercent,
+                TextAlign = HorizontalAlignment.Right
+            };
+            chartGroup.Controls.Add(_detailsTransparencyInput);
+            chartGroup.Controls.Add(CreateHint(
+                "%（越大越透明，文字保持清晰）", new Point(201, 112), new Size(245, 23)));
             _candlePeriodComboBox.SelectedIndexChanged += delegate
             {
                 _errorProvider.SetError(_candlePeriodComboBox, string.Empty);
@@ -256,7 +271,7 @@ namespace StockPerpTicker
                 UpdateChartConfigHint();
             };
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 518), new Size(464, 84));
+            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 556), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -277,7 +292,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 610), new Size(464, 154));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 648), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -382,6 +397,10 @@ namespace StockPerpTicker
 
         private void LoadSettings(AppSettings settings)
         {
+            _detailsTransparencyInput.Value = Math.Max(
+                SettingsStore.MinimumCandleDetailsTransparencyPercent,
+                Math.Min(SettingsStore.MaximumCandleDetailsTransparencyPercent,
+                    settings.candleDetailsTransparencyPercent ?? SettingsStore.DefaultCandleDetailsTransparencyPercent));
             _instrumentListBox.Items.Clear();
             string[] instrumentIds = settings.instrumentIds != null && settings.instrumentIds.Length > default(int)
                 ? settings.instrumentIds
@@ -561,6 +580,7 @@ namespace StockPerpTicker
                 candlePeriod = GetSelectedCandlePeriodKey(),
                 timeRange = GetSelectedTimeRangeKey(),
                 timeZone = GetSelectedTimeZone(),
+                candleDetailsTransparencyPercent = decimal.ToInt32(_detailsTransparencyInput.Value),
                 movingAverages = movingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
                 taskbarTickerPosition = GetSelectedTickerPosition(),

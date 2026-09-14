@@ -19,6 +19,7 @@ namespace StockPerpTicker
         public string candlePeriod { get; set; }
         public string timeRange { get; set; }
         public string timeZone { get; set; }
+        public int? candleDetailsTransparencyPercent { get; set; }
         public int[] movingAverages { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
         public string taskbarTickerPosition { get; set; }
@@ -46,6 +47,9 @@ namespace StockPerpTicker
         internal const int DefaultRefreshIntervalMilliseconds = 1000;
         internal const int MinimumRefreshIntervalMilliseconds = 250;
         internal const int MaximumRefreshIntervalMilliseconds = 60000;
+        internal const int DefaultCandleDetailsTransparencyPercent = 25;
+        internal const int MinimumCandleDetailsTransparencyPercent = 0;
+        internal const int MaximumCandleDetailsTransparencyPercent = 80;
         internal const int DefaultTickerRotationIntervalSeconds = 5;
         internal const int MinimumTickerRotationIntervalSeconds = 2;
         internal const int MaximumTickerRotationIntervalSeconds = 60;
@@ -134,6 +138,7 @@ namespace StockPerpTicker
                 candlePeriod = CandlePeriodDefinition.AutomaticKey,
                 timeRange = RangeDefinition.DefaultKey,
                 timeZone = BeijingTimeZone,
+                candleDetailsTransparencyPercent = DefaultCandleDetailsTransparencyPercent,
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
@@ -157,6 +162,7 @@ namespace StockPerpTicker
                 candlePeriod = settings.candlePeriod,
                 timeRange = settings.timeRange,
                 timeZone = settings.timeZone,
+                candleDetailsTransparencyPercent = settings.candleDetailsTransparencyPercent,
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = settings.taskbarTickerPosition,
@@ -245,6 +251,15 @@ namespace StockPerpTicker
             {
                 error = "界面刷新间隔必须在 " + MinimumRefreshIntervalMilliseconds
                     + " 到 " + MaximumRefreshIntervalMilliseconds + " 毫秒之间。";
+                return false;
+            }
+
+            int detailsTransparency = settings.candleDetailsTransparencyPercent
+                ?? DefaultCandleDetailsTransparencyPercent;
+            if (detailsTransparency < MinimumCandleDetailsTransparencyPercent
+                || detailsTransparency > MaximumCandleDetailsTransparencyPercent)
+            {
+                error = "K 线详情背景透明度必须在 0 到 80% 之间。";
                 return false;
             }
 
@@ -352,6 +367,7 @@ namespace StockPerpTicker
                 candlePeriod = configuredRange.SelectedPeriodKey,
                 timeRange = configuredRange.Key,
                 timeZone = timeZone,
+                candleDetailsTransparencyPercent = detailsTransparency,
                 movingAverages = normalizedMovingAverages.ToArray(),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = tickerPosition,

@@ -47,6 +47,16 @@ namespace StockPerpTicker
         private const float TimeLabelTopWithoutSessionBand = 10f;
         private const int MinutesPerHour = 60;
         private const int MaximumDisplayTimeCacheEntries = 6000;
+        private const int DetailsWidth = 300;
+        private const int DetailsHeight = 282;
+        private const int DetailsMargin = 10;
+        private const int DetailsTitleHeight = 28;
+        private const int DetailsRowHeight = 22;
+        private const int DetailsFooterHeight = 24;
+        private const int DetailsCloseSize = 24;
+        private const int DetailsRowCount = 10;
+        private const int FullOpacityAlpha = 255;
+        private const int FullPercentage = 100;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
@@ -67,6 +77,7 @@ namespace StockPerpTicker
         private readonly ContextMenuStrip _drawingMenu;
         private readonly ToolStripMenuItem _intervalStatisticsMenuItem;
         private readonly ToolStripMenuItem _deleteIntervalStatisticsMenuItem;
+        private readonly ToolStripMenuItem _candleDetailsMenuItem;
         private readonly Dictionary<long, DateTime> _displayTimeCache;
         private Bitmap _chartLayer;
         private List<Candle> _candles;
@@ -99,6 +110,10 @@ namespace StockPerpTicker
         private bool _isSelectingInterval;
         private bool _intervalHovered;
         private IntervalStatistics _intervalStatistics;
+        private Candle _detailsCandle;
+        private bool _detailsInHistory;
+        private int _detailsScrollOffset;
+        private int _detailsTransparency = SettingsStore.DefaultCandleDetailsTransparencyPercent;
 
         internal ChartControl()
         {
@@ -111,6 +126,9 @@ namespace StockPerpTicker
             _axisFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
             _intervalTitleFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
             _drawingMenu = new ContextMenuStrip { ShowImageMargin = false };
+            _candleDetailsMenuItem = new ToolStripMenuItem("查看详情");
+            _candleDetailsMenuItem.Click += delegate { ShowCandleDetails(); };
+            _drawingMenu.Items.Add(_candleDetailsMenuItem);
             _intervalStatisticsMenuItem = new ToolStripMenuItem("区间统计");
             _intervalStatisticsMenuItem.Click += delegate { BeginIntervalSelection(); };
             _deleteIntervalStatisticsMenuItem = new ToolStripMenuItem("删除统计");
@@ -147,6 +165,17 @@ namespace StockPerpTicker
 
             _displayTimeZone = displayTimeZone;
             UpdateIntervalStatistics();
+            if (_detailsCandle != null)
+            {
+                int detailsIndex = FindCandleIndexByTimestamp(_detailsCandle.Timestamp);
+                _detailsInHistory = detailsIndex != MissingCandleIndex;
+                if (detailsIndex != MissingCandleIndex)
+                {
+                    _detailsCandle = _candles[detailsIndex];
+                }
+                // A rolling history window may drop the selected candle. Keep its last
+                // values until an explicit reload or close, so appending never hides it.
+            }
 
             if (!followLatest && rightmostVisibleTimestamp > default(long))
             {
@@ -168,6 +197,8 @@ namespace StockPerpTicker
             _rightOffset = NoViewportOffset;
             _hoverVisible = false;
             ClearIntervalSelection("视图重置");
+            ClearCandleDetails("K 线重新加载");
+            _drawingMenu.Close();
             MarkChartLayerDirty();
         }
 
@@ -228,6 +259,7 @@ namespace StockPerpTicker
             DrawIntervalSelection(e.Graphics);
             DrawCrosshair(e.Graphics);
             DrawIntervalTooltip(e.Graphics);
+            DrawCandleDetails(e.Graphics);
         }
 
         protected override void OnSizeChanged(EventArgs e)
@@ -256,6 +288,17 @@ namespace StockPerpTicker
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (_detailsCandle != null && GetDetailsBounds().Contains(e.Location))
+            {
+                _contextMenuCandleTimestamp = null;
+                _contextMenuInsideInterval = false;
+                if (e.Button == MouseButtons.Left && GetDetailsCloseBounds().Contains(e.Location))
+                {
+                    ClearCandleDetails("点击关闭");
+                    Cursor = Cursors.Default;
+                }
+                return;
+            }
             Rectangle plotArea;
             Rectangle priceArea;
             Rectangle volumeArea;
@@ -266,7 +309,8 @@ namespace StockPerpTicker
                 _contextMenuInsideInterval = plotArea.Contains(e.Location)
                     && IsPointInVisibleInterval(e.Location);
                 int contextCandleIndex;
-                if (priceArea.Contains(e.Location) && TryGetCandleIndexAtX(e.X, out contextCandleIndex))
+                if (string.IsNullOrEmpty(_message) && priceArea.Contains(e.Location)
+                    && TryGetCandleIndexAtX(e.X, out contextCandleIndex))
                 {
                     _contextMenuCandleTimestamp = _candles[contextCandleIndex].Timestamp;
                 }
@@ -308,6 +352,18 @@ namespace StockPerpTicker
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (!_isDragging && _detailsCandle != null && GetDetailsBounds().Contains(e.Location))
+            {
+                _hoverVisible = false;
+                _intervalHovered = false;
+                Cursor = GetDetailsCloseBounds().Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+                Invalidate();
+                return;
+            }
+            if (!_isDragging && !_isSelectingInterval)
+            {
+                Cursor = Cursors.Default;
+            }
             Rectangle plotArea;
             Rectangle priceArea;
             Rectangle volumeArea;
@@ -358,6 +414,7 @@ namespace StockPerpTicker
             {
                 bool canStartIntervalStatistics = _contextMenuCandleTimestamp.HasValue;
                 bool canDeleteIntervalStatistics = _contextMenuInsideInterval;
+                _candleDetailsMenuItem.Available = canStartIntervalStatistics;
                 _intervalStatisticsMenuItem.Available = canStartIntervalStatistics;
                 _deleteIntervalStatisticsMenuItem.Available = canDeleteIntervalStatistics;
                 if (canStartIntervalStatistics || canDeleteIntervalStatistics)
@@ -392,6 +449,14 @@ namespace StockPerpTicker
         protected override void OnMouseWheel(MouseEventArgs e)
         {
             base.OnMouseWheel(e);
+            if (_detailsCandle != null && GetDetailsBounds().Contains(e.Location))
+            {
+                int visibleRows = GetDetailsVisibleRows();
+                _detailsScrollOffset = Math.Max(default(int), Math.Min(
+                    DetailsRowCount - visibleRows, _detailsScrollOffset - Math.Sign(e.Delta)));
+                Invalidate();
+                return;
+            }
             Rectangle plotArea;
             Rectangle priceArea;
             Rectangle volumeArea;
@@ -885,6 +950,147 @@ namespace StockPerpTicker
                 brush,
                 new RectangleF(left, top, width, IntervalTooltipLineHeight),
                 format);
+        }
+
+        internal void SetDetailsTransparency(int transparencyPercent)
+        {
+            int normalized = Math.Max(SettingsStore.MinimumCandleDetailsTransparencyPercent,
+                Math.Min(SettingsStore.MaximumCandleDetailsTransparencyPercent, transparencyPercent));
+            if (_detailsTransparency != normalized)
+            {
+                _detailsTransparency = normalized;
+                Invalidate();
+            }
+        }
+
+        private void ShowCandleDetails()
+        {
+            if (!_contextMenuCandleTimestamp.HasValue)
+            {
+                return;
+            }
+            int index = FindCandleIndexByTimestamp(_contextMenuCandleTimestamp.Value);
+            if (index == MissingCandleIndex)
+            {
+                return;
+            }
+            _detailsCandle = _candles[index];
+            _detailsInHistory = true;
+            _detailsScrollOffset = default(int);
+            _hoverVisible = false;
+            _intervalHovered = false;
+            Logger.Info("查看 K 线详情：时间戳 " + _detailsCandle.Timestamp + " / 周期 " + _range.RestBar);
+            Invalidate();
+        }
+
+        private void ClearCandleDetails(string reason)
+        {
+            if (_detailsCandle != null)
+            {
+                Logger.Info("关闭 K 线详情：时间戳 " + _detailsCandle.Timestamp + " / " + reason);
+            }
+            _detailsCandle = null;
+            _detailsInHistory = false;
+            _detailsScrollOffset = default(int);
+            Invalidate();
+        }
+
+        private Rectangle GetDetailsBounds()
+        {
+            int width = Math.Min(DetailsWidth, Math.Max(1, ClientSize.Width - DetailsMargin * 2));
+            int height = Math.Min(DetailsHeight, Math.Max(1, ClientSize.Height - DetailsMargin * 2));
+            int top = Math.Max(DetailsMargin,
+                Math.Min(ChartHeaderHeight, ClientSize.Height - height - DetailsMargin));
+            return new Rectangle(DetailsMargin, top, width, height);
+        }
+
+        private Rectangle GetDetailsCloseBounds()
+        {
+            Rectangle bounds = GetDetailsBounds();
+            return new Rectangle(bounds.Right - DetailsCloseSize - DetailsMargin,
+                bounds.Top + (DetailsTitleHeight - DetailsCloseSize) / 2, DetailsCloseSize, DetailsCloseSize);
+        }
+
+        private int GetDetailsVisibleRows()
+        {
+            return Math.Max(1, Math.Min(DetailsRowCount,
+                (GetDetailsBounds().Height - DetailsTitleHeight - DetailsFooterHeight) / DetailsRowHeight));
+        }
+
+        private string[] GetDetailsValues()
+        {
+            Candle candle = _detailsCandle;
+            decimal change = candle.Close - candle.Open;
+            bool hasOpeningPrice = candle.Open != decimal.Zero;
+            return new[]
+            {
+                GetDisplayTime(candle).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                FormatHelper.Price(candle.Open, _tickSize),
+                FormatHelper.Price(candle.High, _tickSize),
+                FormatHelper.Price(candle.Low, _tickSize),
+                FormatHelper.Price(candle.Close, _tickSize),
+                candle.Volume.ToString("0.############################", CultureInfo.InvariantCulture),
+                FormatSignedPrice(change),
+                hasOpeningPrice ? FormatSignedPercentage(change / candle.Open * FullPercentage) : "--",
+                hasOpeningPrice ? ((candle.High - candle.Low) / candle.Open * FullPercentage)
+                    .ToString("0.00", CultureInfo.InvariantCulture) + "%" : "--",
+                _displayTimeZone == DisplayTimeZone.UsEastern ? "美东时间" : "北京时间"
+            };
+        }
+
+        private void DrawCandleDetails(Graphics graphics)
+        {
+            if (_detailsCandle == null)
+            {
+                return;
+            }
+            Rectangle bounds = GetDetailsBounds();
+            Rectangle closeBounds = GetDetailsCloseBounds();
+            int visibleRows = GetDetailsVisibleRows();
+            _detailsScrollOffset = Math.Min(_detailsScrollOffset, DetailsRowCount - visibleRows);
+            string[] labels = { "开盘时间", "开盘价", "最高价", "最低价", "收盘价", "成交量", "涨跌值", "涨跌幅", "振幅", "时区" };
+            string[] values = GetDetailsValues();
+            const int ChangeValueRow = 6;
+            const int ChangePercentRow = 7;
+            const int ValueLeftOffset = 82;
+            int alpha = FullOpacityAlpha * (FullPercentage - _detailsTransparency) / FullPercentage;
+            using (Brush background = new SolidBrush(Color.FromArgb(alpha, Color.White)))
+            using (Brush foreground = new SolidBrush(TextColor))
+            using (Brush secondary = new SolidBrush(SecondaryTextColor))
+            using (Brush changeBrush = new SolidBrush(_detailsCandle.Close >= _detailsCandle.Open ? UpColor : DownColor))
+            using (Pen border = new Pen(Color.FromArgb(alpha, GridColor)))
+            using (StringFormat format = new StringFormat { FormatFlags = StringFormatFlags.NoWrap })
+            using (StringFormat closeFormat = new StringFormat
+            {
+                Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center
+            })
+            {
+                graphics.FillRectangle(background, bounds);
+                graphics.DrawRectangle(border, bounds);
+                graphics.DrawString("K 线详情 · " + _range.PeriodLabel, _intervalTitleFont, foreground,
+                    new RectangleF(bounds.Left + DetailsMargin, bounds.Top + 4,
+                        bounds.Width - DetailsCloseSize - DetailsMargin * 3, DetailsTitleHeight), format);
+                graphics.DrawString("×", _intervalTitleFont, foreground, closeBounds, closeFormat);
+                for (int row = default(int); row < visibleRows; row++)
+                {
+                    int index = row + _detailsScrollOffset;
+                    float top = bounds.Top + DetailsTitleHeight + row * DetailsRowHeight;
+                    graphics.DrawString(labels[index], _smallFont, secondary,
+                        new RectangleF(bounds.Left + DetailsMargin, top, ValueLeftOffset - DetailsMargin, DetailsRowHeight), format);
+                    Brush valueBrush = index == ChangeValueRow || index == ChangePercentRow ? changeBrush : foreground;
+                    graphics.DrawString(values[index], _smallFont, valueBrush,
+                        new RectangleF(bounds.Left + ValueLeftOffset, top,
+                            bounds.Width - ValueLeftOffset - DetailsMargin, DetailsRowHeight), format);
+                }
+                string hint = visibleRows < DetailsRowCount ? "滚轮查看更多 · 涨跌/振幅相对开盘" : "涨跌/振幅相对开盘";
+                if (!_detailsInHistory)
+                {
+                    hint = visibleRows < DetailsRowCount ? "滚轮查看更多 · 已保留最后数据" : "历史窗口外：保留最后数据 · 涨跌相对开盘";
+                }
+                graphics.DrawString(hint, _axisFont, secondary,
+                    new RectangleF(bounds.Left + DetailsMargin, bounds.Bottom - DetailsFooterHeight,
+                        bounds.Width - DetailsMargin * 2, DetailsFooterHeight), format);
+            }
         }
 
         private string FormatSignedPrice(decimal value)

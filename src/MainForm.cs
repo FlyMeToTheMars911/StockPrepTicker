@@ -962,6 +962,8 @@ namespace StockPerpTicker
         {
             if (_instrument != null)
             {
+                _chart.SetDetailsTransparency(_settings.candleDetailsTransparencyPercent
+                    ?? SettingsStore.DefaultCandleDetailsTransparencyPercent);
                 _chart.SetData(
                     _candles,
                     _snapshot,
