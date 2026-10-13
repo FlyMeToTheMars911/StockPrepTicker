@@ -35,7 +35,6 @@ namespace StockPerpTicker
         private const long FiveDayMinutes = 7200L;
         private const long OneYearMinutes = 525600L;
         private const long OneMonthPeriodMinutes = 43200L;
-        private const long MaximumSessionMarkerPeriodMinutes = 60L;
         private const int PreMarketStartMinutes = 240;
         private const int RegularMarketStartMinutes = 570;
         private const int AfterHoursStartMinutes = 960;
@@ -43,6 +42,7 @@ namespace StockPerpTicker
         private const float SessionBandTopOffset = 2f;
         private const float SessionBandHeight = 16f;
         private const float SessionLabelMinimumWidth = 42f;
+        private const float SessionSeparatorMinimumWidth = 2f;
         private const float TimeLabelTopWithSessionBand = 20f;
         private const float TimeLabelTopWithoutSessionBand = 10f;
         private const int MinutesPerHour = 60;
@@ -155,8 +155,12 @@ namespace StockPerpTicker
         {
             long rightmostVisibleTimestamp = GetRightmostVisibleTimestamp();
             bool followLatest = _rightOffset == NoViewportOffset;
+            RangeDefinition nextRange = range ?? RangeDefinition.Find(RangeDefinition.DefaultKey);
+            bool sessionSettingsChanged = _displayTimeZone != displayTimeZone
+                || _range == null
+                || _range.PeriodDurationMinutes != nextRange.PeriodDurationMinutes;
             _candles = candles == null ? new List<Candle>() : new List<Candle>(candles);
-            _range = range ?? RangeDefinition.Find(RangeDefinition.DefaultKey);
+            _range = nextRange;
             if (_displayTimeZone != displayTimeZone
                 || _displayTimeCache.Count > MaximumDisplayTimeCacheEntries)
             {
@@ -164,6 +168,13 @@ namespace StockPerpTicker
             }
 
             _displayTimeZone = displayTimeZone;
+            if (sessionSettingsChanged)
+            {
+                Logger.Info("交易时段标识设置：时区 " + _displayTimeZone
+                    + " / 周期 " + _range.RestBar
+                    + " / 显示 " + ShouldDrawUsMarketSessionBands());
+            }
+
             UpdateIntervalStatistics();
             if (_detailsCandle != null)
             {
@@ -1560,7 +1571,8 @@ namespace StockPerpTicker
         {
             return _displayTimeZone == DisplayTimeZone.UsEastern
                 && _range != null
-                && _range.PeriodDurationMinutes <= MaximumSessionMarkerPeriodMinutes;
+                && _range.PeriodDurationMinutes > default(long)
+                && _range.PeriodDurationMinutes < OneDayMinutes;
         }
 
         private void DrawUsMarketSessionBands(
@@ -1569,9 +1581,19 @@ namespace StockPerpTicker
             int visibleStart,
             int visibleCount)
         {
+            if (!ShouldDrawUsMarketSessionBands() || visibleCount <= EmptyCandleCount)
+            {
+                return;
+            }
+
             float candleStep = plotArea.Width / (float)Math.Max(1, visibleCount);
-            int segmentStart = default(int);
-            UsMarketSession currentSession = GetUsMarketSession(GetDisplayTime(_candles[visibleStart]));
+            DateTime nextBoundaryUtc = DateTime.MinValue;
+            DateTime previousEndUtc = DateTime.MinValue;
+            UsMarketSession currentSession = UsMarketSession.Overnight;
+            UsMarketSession bandSession = currentSession;
+            float bandLeft = plotArea.Left;
+            float bandRight = bandLeft;
+            bool hasBand = false;
             using (SolidBrush overnightBrush = new SolidBrush(OvernightSessionColor))
             using (SolidBrush preMarketBrush = new SolidBrush(PreMarketSessionColor))
             using (SolidBrush regularMarketBrush = new SolidBrush(RegularMarketSessionColor))
@@ -1585,50 +1607,122 @@ namespace StockPerpTicker
                 FormatFlags = StringFormatFlags.NoWrap
             })
             {
-                for (int relativeIndex = 1; relativeIndex <= visibleCount; relativeIndex++)
+                GraphicsState state = graphics.Save();
+                try
                 {
-                    UsMarketSession nextSession = currentSession;
-                    if (relativeIndex < visibleCount)
-                    {
-                        nextSession = GetUsMarketSession(
-                            GetDisplayTime(_candles[visibleStart + relativeIndex]));
-                    }
-
-                    if (relativeIndex < visibleCount && nextSession == currentSession)
-                    {
-                        continue;
-                    }
-
-                    float segmentLeft = plotArea.Left + candleStep * segmentStart;
-                    float segmentRight = plotArea.Left + candleStep * relativeIndex;
-                    RectangleF band = new RectangleF(
-                        segmentLeft,
+                    graphics.SetClip(new RectangleF(
+                        plotArea.Left,
                         plotArea.Bottom + SessionBandTopOffset,
-                        Math.Max(MinimumIntervalDrawingWidth, segmentRight - segmentLeft),
-                        SessionBandHeight);
-                    graphics.FillRectangle(
-                        GetSessionBrush(
-                            currentSession,
-                            overnightBrush,
-                            preMarketBrush,
-                            regularMarketBrush,
-                            afterHoursBrush),
-                        band);
-                    graphics.DrawLine(separatorPen, segmentLeft, band.Top, segmentLeft, band.Bottom);
-                    if (band.Width >= SessionLabelMinimumWidth)
+                        plotArea.Width,
+                        SessionBandHeight), CombineMode.Intersect);
+                    for (int relativeIndex = 0; relativeIndex < visibleCount; relativeIndex++)
                     {
-                        graphics.DrawString(
-                            GetSessionLabel(currentSession),
-                            _smallFont,
-                            textBrush,
-                            band,
-                            centerFormat);
+                        DateTime candleStartUtc = DisplayTimeConverter.FromUnixMillisecondsUtc(
+                            _candles[visibleStart + relativeIndex].Timestamp);
+                        DateTime candleEndUtc = candleStartUtc.AddMinutes(_range.PeriodDurationMinutes);
+                        DateTime segmentStartUtc = candleStartUtc;
+                        while (segmentStartUtc < candleEndUtc)
+                        {
+                            if (segmentStartUtc >= nextBoundaryUtc)
+                            {
+                                DateTime easternTime = DisplayTimeConverter.FromUtc(
+                                    segmentStartUtc, DisplayTimeZone.UsEastern);
+                                currentSession = GetUsMarketSession(easternTime);
+                                nextBoundaryUtc = GetNextUsMarketSessionBoundaryUtc(easternTime, currentSession);
+                            }
+
+                            DateTime segmentEndUtc = nextBoundaryUtc < candleEndUtc
+                                ? nextBoundaryUtc
+                                : candleEndUtc;
+                            float segmentLeft = plotArea.Left + candleStep * (relativeIndex
+                                + (float)((segmentStartUtc - candleStartUtc).TotalMinutes / _range.PeriodDurationMinutes));
+                            float segmentRight = plotArea.Left + candleStep * (relativeIndex
+                                + (float)((segmentEndUtc - candleStartUtc).TotalMinutes / _range.PeriodDurationMinutes));
+                            if (hasBand && (bandSession != currentSession || previousEndUtc != segmentStartUtc))
+                            {
+                                DrawUsMarketSessionBand(graphics, plotArea, bandLeft, bandRight, bandSession,
+                                    GetSessionBrush(bandSession, overnightBrush, preMarketBrush, regularMarketBrush, afterHoursBrush),
+                                    textBrush, separatorPen, centerFormat);
+                                hasBand = false;
+                            }
+
+                            if (!hasBand)
+                            {
+                                bandLeft = segmentLeft;
+                                bandSession = currentSession;
+                                hasBand = true;
+                            }
+
+                            bandRight = segmentRight;
+                            previousEndUtc = segmentEndUtc;
+                            segmentStartUtc = segmentEndUtc;
+                        }
                     }
 
-                    segmentStart = relativeIndex;
-                    currentSession = nextSession;
+                    if (hasBand)
+                    {
+                        DrawUsMarketSessionBand(graphics, plotArea, bandLeft, bandRight, bandSession,
+                            GetSessionBrush(bandSession, overnightBrush, preMarketBrush, regularMarketBrush, afterHoursBrush),
+                            textBrush, separatorPen, centerFormat);
+                    }
+                }
+                finally
+                {
+                    graphics.Restore(state);
                 }
             }
+        }
+
+        private void DrawUsMarketSessionBand(
+            Graphics graphics,
+            Rectangle plotArea,
+            float left,
+            float right,
+            UsMarketSession session,
+            Brush backgroundBrush,
+            Brush textBrush,
+            Pen separatorPen,
+            StringFormat centerFormat)
+        {
+            RectangleF band = new RectangleF(left, plotArea.Bottom + SessionBandTopOffset,
+                right - left, SessionBandHeight);
+            graphics.FillRectangle(backgroundBrush, band);
+            if (band.Width >= SessionSeparatorMinimumWidth)
+            {
+                graphics.DrawLine(separatorPen, left, band.Top, left, band.Bottom);
+            }
+
+            if (band.Width >= SessionLabelMinimumWidth)
+            {
+                graphics.DrawString(GetSessionLabel(session), _smallFont, textBrush, band, centerFormat);
+            }
+        }
+
+        private static DateTime GetNextUsMarketSessionBoundaryUtc(DateTime easternTime, UsMarketSession session)
+        {
+            int boundaryMinutes;
+            DateTime boundaryDate = easternTime.Date;
+            switch (session)
+            {
+                case UsMarketSession.PreMarket:
+                    boundaryMinutes = RegularMarketStartMinutes;
+                    break;
+                case UsMarketSession.RegularMarket:
+                    boundaryMinutes = AfterHoursStartMinutes;
+                    break;
+                case UsMarketSession.AfterHours:
+                    boundaryMinutes = OvernightStartMinutes;
+                    break;
+                default:
+                    boundaryMinutes = PreMarketStartMinutes;
+                    if (easternTime.TimeOfDay.TotalMinutes >= OvernightStartMinutes)
+                    {
+                        boundaryDate = boundaryDate.AddDays(1);
+                    }
+                    break;
+            }
+
+            return DisplayTimeConverter.ToUtc(boundaryDate.AddMinutes(boundaryMinutes), DisplayTimeZone.UsEastern);
         }
 
         private static Brush GetSessionBrush(

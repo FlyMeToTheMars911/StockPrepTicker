@@ -29,7 +29,19 @@ namespace StockPerpTicker
 
         internal static DateTime FromUnixMilliseconds(long timestamp, DisplayTimeZone displayTimeZone)
         {
-            return FromUtc(UnixEpoch.AddMilliseconds(timestamp), displayTimeZone);
+            return FromUtc(FromUnixMillisecondsUtc(timestamp), displayTimeZone);
+        }
+
+        internal static DateTime FromUnixMillisecondsUtc(long timestamp)
+        {
+            return UnixEpoch.AddMilliseconds(timestamp);
+        }
+
+        internal static DateTime ToUtc(DateTime localTime, DisplayTimeZone displayTimeZone)
+        {
+            return TimeZoneInfo.ConvertTimeToUtc(
+                DateTime.SpecifyKind(localTime, DateTimeKind.Unspecified),
+                GetTimeZone(displayTimeZone));
         }
 
         internal static DateTime FromUtc(DateTime utc, DisplayTimeZone displayTimeZone)
