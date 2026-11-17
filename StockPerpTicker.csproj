@@ -18,6 +18,7 @@
     <Compile Include="src\MarketModels.cs" />
     <Compile Include="src\JsonParser.cs" />
     <Compile Include="src\OkxMarketClient.cs" />
+    <Compile Include="src\CnnFearGreedClient.cs" />
     <Compile Include="src\ChartControl.cs" />
     <Compile Include="src\TaskbarTickerForm.cs" />
     <Compile Include="src\SettingsForm.cs" />
@@ -53,6 +54,7 @@
          Win32Manifest="$(MSBuildProjectDirectory)\app.manifest.xml" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\app.config" DestinationFiles="$(OutputPath)\$(AssemblyName).exe.config" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\README.md" DestinationFolder="$(OutputPath)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\docs\cnn-fear-greed.md" DestinationFolder="$(OutputPath)\docs" />
   </Target>
 
   <Target Name="Clean">

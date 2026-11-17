@@ -21,6 +21,8 @@ namespace StockPerpTicker
         public string timeZone { get; set; }
         public int? candleDetailsTransparencyPercent { get; set; }
         public int[] movingAverages { get; set; }
+        public bool trackCnnFearGreed { get; set; }
+        public string fearGreedTimeRange { get; set; }
         public bool showTaskbarTickerOnMinimize { get; set; }
         public string taskbarTickerPosition { get; set; }
         public bool hasCustomTaskbarTickerPosition { get; set; }
@@ -140,6 +142,8 @@ namespace StockPerpTicker
                 timeZone = BeijingTimeZone,
                 candleDetailsTransparencyPercent = DefaultCandleDetailsTransparencyPercent,
                 movingAverages = (int[])DefaultMovingAverages.Clone(),
+                trackCnnFearGreed = false,
+                fearGreedTimeRange = FearGreedInstrument.DefaultTimeRangeKey,
                 showTaskbarTickerOnMinimize = true,
                 taskbarTickerPosition = BottomRightTickerPosition,
                 hasCustomTaskbarTickerPosition = false,
@@ -164,6 +168,8 @@ namespace StockPerpTicker
                 timeZone = settings.timeZone,
                 candleDetailsTransparencyPercent = settings.candleDetailsTransparencyPercent,
                 movingAverages = settings.movingAverages == null ? null : (int[])settings.movingAverages.Clone(),
+                trackCnnFearGreed = settings.trackCnnFearGreed,
+                fearGreedTimeRange = FearGreedInstrument.NormalizeTimeRangeKey(settings.fearGreedTimeRange),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = settings.taskbarTickerPosition,
                 hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,
@@ -369,6 +375,8 @@ namespace StockPerpTicker
                 timeZone = timeZone,
                 candleDetailsTransparencyPercent = detailsTransparency,
                 movingAverages = normalizedMovingAverages.ToArray(),
+                trackCnnFearGreed = settings.trackCnnFearGreed,
+                fearGreedTimeRange = FearGreedInstrument.NormalizeTimeRangeKey(settings.fearGreedTimeRange),
                 showTaskbarTickerOnMinimize = settings.showTaskbarTickerOnMinimize,
                 taskbarTickerPosition = tickerPosition,
                 hasCustomTaskbarTickerPosition = settings.hasCustomTaskbarTickerPosition,

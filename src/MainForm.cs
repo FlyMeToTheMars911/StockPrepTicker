@@ -17,12 +17,15 @@ namespace StockPerpTicker
         private const int MinimumVisibleWindowOverlap = 100;
         private const string BeijingClockLabel = "北京";
         private const string UsEasternClockLabel = "美东";
+        private const int SingleInstrumentCount = 1;
+        private const int FearGreedStaleDays = 5;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color SecondaryTextColor = Color.FromArgb(90, 96, 110);
         private static readonly Candle[] EmptyCandles = new Candle[0];
         private AppSettings _settings;
         private readonly OkxMarketClient _marketClient;
+        private readonly CnnFearGreedClient _fearGreedClient;
         private readonly CancellationTokenSource _applicationCancellation;
         private readonly List<Candle> _candles;
         private readonly Dictionary<string, Button> _instrumentButtons;
@@ -38,7 +41,9 @@ namespace StockPerpTicker
         private readonly Label _profitLossLabel;
         private readonly Label _statusLabel;
         private readonly Label _clockLabel;
+        private readonly Label _chartSelectionLabel;
         private readonly ComboBox _periodComboBox;
+        private readonly ComboBox _fearGreedRangeComboBox;
         private readonly Button _pinButton;
         private readonly Button _settingsButton;
         private readonly NotifyIcon _notifyIcon;
@@ -47,6 +52,7 @@ namespace StockPerpTicker
         private readonly System.Windows.Forms.Timer _clockTimer;
         private readonly System.Windows.Forms.Timer _tickerTimer;
         private readonly System.Windows.Forms.Timer _fallbackTimer;
+        private readonly System.Windows.Forms.Timer _fearGreedTimer;
         private readonly System.Windows.Forms.Timer _memoryTimer;
         private readonly System.Windows.Forms.Timer _renderTimer;
         private readonly System.Windows.Forms.Timer _miniTickerRotationTimer;
@@ -69,6 +75,7 @@ namespace StockPerpTicker
         private bool _normalBoundsCapturePending;
         private bool _miniTickerBusy;
         private bool _periodSelectionReady;
+        private bool _fearGreedRangeSelectionReady;
         private Rectangle _lastNormalBounds;
         private FormWindowState _windowStateBeforeMinimize;
         private int _rangeGeneration;
@@ -76,12 +83,19 @@ namespace StockPerpTicker
         private int _miniTickerIndex;
         private string _selectedInstrumentId;
         private Candle _pendingCandle;
+        private int _pendingCandleGeneration;
         private Icon _appIcon;
+        private FearGreedData _fearGreedData;
+        private Task<FearGreedData> _fearGreedFetchTask;
+        private DateTime _fearGreedLastAttemptUtc;
+        private Exception _fearGreedFetchError;
 
         internal MainForm(AppSettings settings, WindowState initialState)
         {
             _settings = SettingsStore.Clone(settings);
+            _settings.fearGreedTimeRange = FearGreedInstrument.NormalizeTimeRangeKey(_settings.fearGreedTimeRange);
             _marketClient = new OkxMarketClient();
+            _fearGreedClient = new CnnFearGreedClient();
             _applicationCancellation = new CancellationTokenSource();
             _candles = new List<Candle>();
             _instrumentButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
@@ -91,7 +105,7 @@ namespace StockPerpTicker
             _currentRange = RangeDefinition.Create(_settings.timeRange, _settings.candlePeriod);
             _settings.timeRange = _currentRange.Key;
             _settings.candlePeriod = _currentRange.SelectedPeriodKey;
-            _selectedInstrumentId = ResolveInitialInstrumentId(initialState.InstrumentId, _settings.instrumentIds);
+            _selectedInstrumentId = ResolveInitialInstrumentId(initialState.InstrumentId, GetTrackedInstrumentIds());
             _rangeFontRegular = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular, GraphicsUnit.Point);
             _rangeFontBold = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
 
@@ -120,7 +134,7 @@ namespace StockPerpTicker
                 Location = new Point(10, 5),
                 Size = new Size(170, 22),
                 Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
-                Text = _selectedInstrumentId,
+                Text = IsFearGreedSelected ? FearGreedInstrument.DisplayName : _selectedInstrumentId,
                 TextAlign = ContentAlignment.MiddleLeft
             };
             _priceLabel = new Label
@@ -224,12 +238,13 @@ namespace StockPerpTicker
                 Visible = false
             };
 
-            chartBar.Controls.Add(new Label
+            _chartSelectionLabel = new Label
             {
                 AutoSize = true,
                 Location = new Point(8, 14),
                 Text = "周期"
-            });
+            };
+            chartBar.Controls.Add(_chartSelectionLabel);
             _periodComboBox = new ComboBox
             {
                 Location = new Point(42, 9),
@@ -247,6 +262,23 @@ namespace StockPerpTicker
             _periodComboBox.SelectedIndexChanged += async delegate { await ChangeCandlePeriodAsync(); };
             _periodSelectionReady = true;
             chartBar.Controls.Add(_periodComboBox);
+            _fearGreedRangeComboBox = new ComboBox
+            {
+                Location = new Point(70, 9),
+                Size = new Size(88, 25),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                TabStop = false
+            };
+            foreach (string rangeKey in FearGreedInstrument.TimeRangeKeys)
+            {
+                _fearGreedRangeComboBox.Items.Add(FearGreedInstrument.GetTimeRangeLabel(rangeKey));
+            }
+
+            SelectFearGreedTimeRange();
+            _fearGreedRangeComboBox.SelectedIndexChanged += async delegate { await ChangeFearGreedTimeRangeAsync(); };
+            _fearGreedRangeSelectionReady = true;
+            chartBar.Controls.Add(_fearGreedRangeComboBox);
+            UpdateChartSelector();
 
             _clockLabel = new Label
             {
@@ -298,6 +330,8 @@ namespace StockPerpTicker
             _tickerTimer.Tick += async delegate { await RefreshTickerAsync(); };
             _fallbackTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _fallbackTimer.Tick += async delegate { await RefreshFallbackAsync(); };
+            _fearGreedTimer = new System.Windows.Forms.Timer { Interval = FearGreedInstrument.RefreshIntervalMilliseconds };
+            _fearGreedTimer.Tick += async delegate { await RefreshFearGreedAsync(); };
             _renderTimer = new System.Windows.Forms.Timer
             {
                 Interval = settings.refreshIntervalMilliseconds > default(int)
@@ -338,7 +372,7 @@ namespace StockPerpTicker
 
         private async Task ChangeCandlePeriodAsync()
         {
-            if (!_periodSelectionReady)
+            if (!_periodSelectionReady || IsFearGreedSelected)
             {
                 return;
             }
@@ -398,6 +432,57 @@ namespace StockPerpTicker
             }
         }
 
+        private void SelectFearGreedTimeRange()
+        {
+            bool selectionWasReady = _fearGreedRangeSelectionReady;
+            _fearGreedRangeSelectionReady = false;
+            try
+            {
+                _fearGreedRangeComboBox.SelectedIndex = Array.IndexOf(
+                    FearGreedInstrument.TimeRangeKeys,
+                    FearGreedInstrument.NormalizeTimeRangeKey(_settings.fearGreedTimeRange));
+            }
+            finally
+            {
+                _fearGreedRangeSelectionReady = selectionWasReady;
+            }
+        }
+
+        private void UpdateChartSelector()
+        {
+            _chartSelectionLabel.Text = IsFearGreedSelected ? "时间范围" : "周期";
+            _periodComboBox.Visible = !IsFearGreedSelected;
+            _periodComboBox.Enabled = !IsFearGreedSelected;
+            _fearGreedRangeComboBox.Visible = IsFearGreedSelected;
+            SelectPeriod(_currentRange.SelectedPeriodKey);
+            SelectFearGreedTimeRange();
+        }
+
+        private async Task ChangeFearGreedTimeRangeAsync()
+        {
+            if (!_fearGreedRangeSelectionReady || !IsFearGreedSelected
+                || _fearGreedRangeComboBox.SelectedIndex < default(int))
+            {
+                return;
+            }
+
+            string key = FearGreedInstrument.TimeRangeKeys[_fearGreedRangeComboBox.SelectedIndex];
+            if (string.Equals(key, _settings.fearGreedTimeRange, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _settings.fearGreedTimeRange = key;
+            Logger.Info("CNN Fear and Greed Index 时间范围切换：" + key);
+            if (_instrument == null)
+            {
+                PersistChartConfiguration();
+                return;
+            }
+
+            await LoadFearGreedRangeAsync(GetDisplayRange(), true);
+        }
+
         private void LayoutTopBar(Panel topBar)
         {
             if (topBar == null)
@@ -408,7 +493,10 @@ namespace StockPerpTicker
             _settingsButton.Left = Math.Max(0, topBar.ClientSize.Width - _settingsButton.Width - 8);
             _pinButton.Left = Math.Max(0, _settingsButton.Left - _pinButton.Width - 6);
             int contentRight = Math.Max(210, _pinButton.Left - 4);
-            _symbolLabel.Width = Math.Max(108, Math.Min(170, contentRight - 188));
+            _symbolLabel.Width = IsFearGreedSelected
+                ? TextRenderer.MeasureText(FearGreedInstrument.DisplayName, _symbolLabel.Font).Width
+                : Math.Max(108, Math.Min(170, contentRight - 188));
+            _priceLabel.Width = IsFearGreedSelected ? 54 : 90;
             _priceLabel.Left = _symbolLabel.Right + 4;
             _changeLabel.Left = _priceLabel.Right + 4;
             _changeLabel.Width = Math.Max(54, contentRight - _changeLabel.Left);
@@ -438,6 +526,29 @@ namespace StockPerpTicker
             return configuredInstrumentIds[0];
         }
 
+        private bool IsFearGreedSelected
+        {
+            get { return string.Equals(_selectedInstrumentId, FearGreedInstrument.Id, StringComparison.Ordinal); }
+        }
+
+        private string[] GetTrackedInstrumentIds()
+        {
+            List<string> instruments = new List<string>(_settings.instrumentIds);
+            if (_settings.trackCnnFearGreed)
+            {
+                instruments.Add(FearGreedInstrument.Id);
+            }
+
+            return instruments.ToArray();
+        }
+
+        private RangeDefinition GetDisplayRange()
+        {
+            return IsFearGreedSelected
+                ? RangeDefinition.Create(_settings.fearGreedTimeRange, FearGreedInstrument.DailyPeriodKey)
+                : _currentRange;
+        }
+
         private void RebuildInstrumentButtons()
         {
             foreach (Button existingButton in _instrumentButtons.Values)
@@ -447,7 +558,8 @@ namespace StockPerpTicker
 
             _instrumentButtons.Clear();
             _instrumentStrip.Controls.Clear();
-            foreach (string instrumentId in _settings.instrumentIds)
+            string[] trackedInstruments = GetTrackedInstrumentIds();
+            foreach (string instrumentId in trackedInstruments)
             {
                 string capturedInstrumentId = instrumentId;
                 string displayName = CompactInstrumentId(instrumentId);
@@ -470,7 +582,7 @@ namespace StockPerpTicker
                 _instrumentStrip.Controls.Add(button);
             }
 
-            bool showInstrumentStrip = _settings.instrumentIds.Length > 1;
+            bool showInstrumentStrip = trackedInstruments.Length > SingleInstrumentCount;
             _instrumentStrip.Visible = showInstrumentStrip;
             _bottomBar.Height = showInstrumentStrip ? 74 : 42;
             UpdateInstrumentSelection();
@@ -491,6 +603,11 @@ namespace StockPerpTicker
 
         private static string CompactInstrumentId(string instrumentId)
         {
+            if (string.Equals(instrumentId, FearGreedInstrument.Id, StringComparison.Ordinal))
+            {
+                return FearGreedInstrument.DisplayName;
+            }
+
             int separator = instrumentId.IndexOf('-');
             return separator > default(int) ? instrumentId.Substring(0, separator) : instrumentId;
         }
@@ -504,9 +621,9 @@ namespace StockPerpTicker
 
             _instrumentStrip.Enabled = false;
             string previousInstrumentId = _selectedInstrumentId;
+            int generation = ++_settingsGeneration;
             try
             {
-                ++_settingsGeneration;
                 _selectedInstrumentId = instrumentId;
                 UpdateInstrumentSelection();
                 await ActivateInstrumentAsync(instrumentId, true);
@@ -516,6 +633,11 @@ namespace StockPerpTicker
             }
             catch (Exception ex)
             {
+                if (generation != _settingsGeneration || _applicationCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
                 _selectedInstrumentId = previousInstrumentId;
                 Logger.Error("切换行情标的失败：" + instrumentId, ex);
                 MessageBox.Show(ex.Message, "无法切换行情标的", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -535,6 +657,12 @@ namespace StockPerpTicker
             int settingsGeneration = _settingsGeneration;
             try
             {
+                if (IsFearGreedSelected)
+                {
+                    await ActivateInstrumentAsync(FearGreedInstrument.Id, false);
+                    return;
+                }
+
                 SetConnectionStatus(ConnectionStatus.Loading, "正在校验合约");
                 InstrumentInfo instrument = await _marketClient.ValidateInstrumentAsync(
                     _selectedInstrumentId,
@@ -613,33 +741,62 @@ namespace StockPerpTicker
 
         private async Task ActivateInstrumentAsync(string instrumentId, bool saveState)
         {
+            int generation = _settingsGeneration;
             InstrumentInfo instrument;
-            if (!_instrumentInfos.TryGetValue(instrumentId, out instrument))
+            bool isFearGreed = string.Equals(instrumentId, FearGreedInstrument.Id, StringComparison.Ordinal);
+            if (isFearGreed)
+            {
+                instrument = new InstrumentInfo { InstrumentId = FearGreedInstrument.Id, TickSize = FearGreedInstrument.TickSize };
+            }
+            else if (!_instrumentInfos.TryGetValue(instrumentId, out instrument))
             {
                 SetConnectionStatus(ConnectionStatus.Loading, "正在校验 " + instrumentId);
                 instrument = await _marketClient.ValidateInstrumentAsync(
                     instrumentId,
                     _applicationCancellation.Token);
+                if (generation != _settingsGeneration || _applicationCancellation.IsCancellationRequested
+                    || !string.Equals(_selectedInstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
                 _instrumentInfos[instrumentId] = instrument;
             }
 
             _tickerTimer.Stop();
             _fallbackTimer.Stop();
+            _fearGreedTimer.Stop();
             StopRealtimeStream();
             _instrument = instrument;
             _selectedInstrumentId = instrument.InstrumentId;
             _snapshot = null;
             _candles.Clear();
-            _symbolLabel.Text = instrument.InstrumentId;
+            _symbolLabel.Text = isFearGreed ? FearGreedInstrument.DisplayName : instrument.InstrumentId;
+            LayoutTopBar(_symbolLabel.Parent as Panel);
+            UpdateChartSelector();
+            _chart.SetLineMode(isFearGreed);
             _priceLabel.Text = "--";
             _changeLabel.Text = "--";
             UpdateHeader();
-            Text = instrument.InstrumentId + " - StockPerpTicker";
+            Text = (isFearGreed ? FearGreedInstrument.DisplayName : instrument.InstrumentId) + " - StockPerpTicker";
             _notifyIcon.Text = "StockPerpTicker";
             UpdateInstrumentSelection();
             await ChangeRangeAsync(_currentRange, false);
-            _tickerTimer.Start();
-            _fallbackTimer.Start();
+            if (generation != _settingsGeneration || _applicationCancellation.IsCancellationRequested
+                || !string.Equals(_selectedInstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (isFearGreed)
+            {
+                _fearGreedTimer.Start();
+            }
+            else
+            {
+                _tickerTimer.Start();
+                _fallbackTimer.Start();
+            }
             if (saveState)
             {
                 SaveWindowState();
@@ -648,6 +805,12 @@ namespace StockPerpTicker
 
         private async Task ChangeRangeAsync(RangeDefinition range, bool persistConfiguration)
         {
+            if (IsFearGreedSelected)
+            {
+                await LoadFearGreedRangeAsync(GetDisplayRange(), persistConfiguration);
+                return;
+            }
+
             int generation = ++_rangeGeneration;
             CancelRangeLoad();
             CancellationTokenSource loadCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -665,6 +828,8 @@ namespace StockPerpTicker
             _settings.timeRange = range.Key;
             _settings.candlePeriod = range.SelectedPeriodKey;
             SelectPeriod(range.SelectedPeriodKey);
+            _chart.SetData(EmptyCandles, null, range, _instrument.TickSize,
+                _settings.movingAverages, _settings.SelectedTimeZone);
             if (persistConfiguration)
             {
                 PersistChartConfiguration();
@@ -727,6 +892,170 @@ namespace StockPerpTicker
             }
         }
 
+        private async Task<FearGreedData> GetFearGreedDataAsync()
+        {
+            if (_fearGreedFetchTask != null)
+            {
+                return await _fearGreedFetchTask;
+            }
+
+            if (DateTime.UtcNow - _fearGreedLastAttemptUtc
+                < TimeSpan.FromMilliseconds(FearGreedInstrument.RefreshIntervalMilliseconds))
+            {
+                if (_fearGreedFetchError != null)
+                {
+                    throw new InvalidOperationException("CNN 数据暂时不可用：" + _fearGreedFetchError.Message, _fearGreedFetchError);
+                }
+
+                if (_fearGreedData != null)
+                {
+                    return _fearGreedData;
+                }
+            }
+
+            _fearGreedLastAttemptUtc = DateTime.UtcNow;
+            _fearGreedFetchTask = _fearGreedClient.FetchAsync(_applicationCancellation.Token);
+            try
+            {
+                _fearGreedData = await _fearGreedFetchTask;
+                _fearGreedFetchError = null;
+                return _fearGreedData;
+            }
+            catch (Exception ex)
+            {
+                _fearGreedFetchError = ex;
+                throw;
+            }
+            finally
+            {
+                _fearGreedFetchTask = null;
+            }
+        }
+
+        private async Task LoadFearGreedRangeAsync(RangeDefinition range, bool persistConfiguration)
+        {
+            int generation = ++_rangeGeneration;
+            CancelRangeLoad();
+            StopRealtimeStream();
+            lock (_pendingCandleSync)
+            {
+                _pendingCandle = null;
+            }
+
+            _settings.fearGreedTimeRange = range.Key;
+            _chart.ResetViewport();
+            _chart.SetLineMode(true);
+            SelectFearGreedTimeRange();
+            _chart.SetData(EmptyCandles, null, GetDisplayRange(), FearGreedInstrument.TickSize,
+                new int[0], _settings.SelectedTimeZone);
+            _chart.SetMessage("正在加载 CNN 恐惧贪婪指数…", false);
+            SetConnectionStatus(ConnectionStatus.Loading, "正在加载 CNN");
+            if (persistConfiguration)
+            {
+                PersistChartConfiguration();
+            }
+
+            try
+            {
+                FearGreedData data = await GetFearGreedDataAsync();
+                if (generation != _rangeGeneration || !IsFearGreedSelected
+                    || _applicationCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                ApplyFearGreedData(data);
+                Logger.Info("CNN 指数范围加载完成：" + range.Key + " / " + _candles.Count + " 个每日数据点。");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                if (generation != _rangeGeneration || !IsFearGreedSelected
+                    || _applicationCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _candles.Clear();
+                _snapshot = null;
+                if (_fearGreedData != null)
+                {
+                    ApplyFearGreedData(_fearGreedData);
+                }
+
+                SetConnectionStatus(ConnectionStatus.Error, _fearGreedData == null ? "CNN 获取失败" : "CNN 更新失败，保留上次数据");
+                if (_candles.Count == default(int))
+                {
+                    _chart.SetMessage(ex.Message + Environment.NewLine + "5分钟后自动重试，可在设置中关闭追踪。", true);
+                }
+                Logger.Error("CNN 指数范围加载失败：" + range.Key, ex);
+            }
+        }
+
+        private void ApplyFearGreedData(FearGreedData data)
+        {
+            _candles.Clear();
+            RangeDefinition displayRange = GetDisplayRange();
+            IEnumerable<Candle> history = data.History;
+            if (!displayRange.IsAllHistory)
+            {
+                DateTime latestUtc = DisplayTimeConverter.FromUnixMillisecondsUtc(data.History[data.History.Count - 1].Timestamp);
+                DateTime cutoff = latestUtc.Date.AddMinutes(-displayRange.DurationMinutes);
+                history = history.Where(candle => DisplayTimeConverter.FromUnixMillisecondsUtc(candle.Timestamp).Date > cutoff);
+            }
+
+            _candles.AddRange(history);
+            _snapshot = data.Snapshot;
+            RenderMarket();
+            UpdateHeader();
+            bool stale = DateTime.UtcNow - data.UpdatedAtUtc > TimeSpan.FromDays(FearGreedStaleDays);
+            string updated = DisplayTimeConverter.FromUtc(data.UpdatedAtUtc, _settings.SelectedTimeZone).ToString("MM-dd HH:mm");
+            SetConnectionStatus(stale ? ConnectionStatus.Offline : ConnectionStatus.Live,
+                "CNN " + updated + (stale ? " 数据陈旧" : " 更新"));
+        }
+
+        private async Task RefreshFearGreedAsync()
+        {
+            if (!IsFearGreedSelected || !_settings.trackCnnFearGreed
+                || _applicationCancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            int generation = _rangeGeneration;
+            try
+            {
+                FearGreedData data = await GetFearGreedDataAsync();
+                if (generation == _rangeGeneration && IsFearGreedSelected
+                    && !_applicationCancellation.IsCancellationRequested)
+                {
+                    ApplyFearGreedData(data);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                if (generation == _rangeGeneration && IsFearGreedSelected
+                    && !_applicationCancellation.IsCancellationRequested)
+                {
+                    SetConnectionStatus(ConnectionStatus.Error, _snapshot == null ? "CNN 获取失败" : "CNN 更新失败，保留上次数据");
+                    if (_candles.Count == default(int))
+                    {
+                        _chart.SetMessage(ex.Message, true);
+                    }
+                    else
+                    {
+                        RenderMarket();
+                    }
+                    Logger.Error("刷新 CNN 恐惧贪婪指数失败", ex);
+                }
+            }
+        }
+
         private void PersistChartConfiguration()
         {
             try
@@ -734,7 +1063,8 @@ namespace StockPerpTicker
                 SettingsStore.Save(_settings);
                 SaveWindowState();
                 Logger.Info(
-                    "K 线配置已保存：范围 " + _settings.timeRange + " / 周期 " + _settings.candlePeriod);
+                    "图表配置已保存：OKX 范围 " + _settings.timeRange + " / 周期 " + _settings.candlePeriod
+                    + " / CNN 范围 " + _settings.fearGreedTimeRange);
             }
             catch (Exception ex)
             {
@@ -755,10 +1085,19 @@ namespace StockPerpTicker
                 {
                     if (generation == _rangeGeneration)
                     {
-                        HandleRealtimeCandle(candle);
+                        HandleRealtimeCandle(candle, generation);
                     }
                 },
-                HandleConnectionStatus,
+                delegate(ConnectionStatus status, string message)
+                {
+                    SafeBeginInvoke(delegate
+                    {
+                        if (generation == _rangeGeneration && !IsFearGreedSelected)
+                        {
+                            SetConnectionStatus(status, message);
+                        }
+                    });
+                },
                 token);
             _streamTask.ContinueWith(
                 task => Logger.Error("实时行情任务异常", task.Exception),
@@ -777,24 +1116,27 @@ namespace StockPerpTicker
             }
         }
 
-        private void HandleRealtimeCandle(Candle candle)
+        private void HandleRealtimeCandle(Candle candle, int generation)
         {
             lock (_pendingCandleSync)
             {
                 _pendingCandle = candle;
+                _pendingCandleGeneration = generation;
             }
         }
 
         private void ApplyPendingRealtimeCandle()
         {
             Candle candle;
+            int generation;
             lock (_pendingCandleSync)
             {
                 candle = _pendingCandle;
+                generation = _pendingCandleGeneration;
                 _pendingCandle = null;
             }
 
-            if (candle == null)
+            if (candle == null || IsFearGreedSelected || generation != _rangeGeneration)
             {
                 return;
             }
@@ -811,14 +1153,9 @@ namespace StockPerpTicker
             UpdateHeader();
         }
 
-        private void HandleConnectionStatus(ConnectionStatus status, string message)
-        {
-            SafeBeginInvoke(delegate { SetConnectionStatus(status, message); });
-        }
-
         private async Task RefreshTickerAsync()
         {
-            if (_instrument == null || _applicationCancellation.IsCancellationRequested)
+            if (_instrument == null || IsFearGreedSelected || _applicationCancellation.IsCancellationRequested)
             {
                 return;
             }
@@ -848,7 +1185,8 @@ namespace StockPerpTicker
 
         private async Task RefreshFallbackAsync()
         {
-            if (_fallbackBusy || _instrument == null || _connectionStatus == ConnectionStatus.Live || _applicationCancellation.IsCancellationRequested)
+            if (_fallbackBusy || _instrument == null || IsFearGreedSelected
+                || _connectionStatus == ConnectionStatus.Live || _applicationCancellation.IsCancellationRequested)
             {
                 return;
             }
@@ -857,12 +1195,13 @@ namespace StockPerpTicker
             try
             {
                 int settingsGeneration = _settingsGeneration;
+                int rangeGeneration = _rangeGeneration;
                 InstrumentInfo instrument = _instrument;
                 Candle latest = await _marketClient.FetchLatestCandleAsync(
                     instrument.InstrumentId,
                     _currentRange,
                     _applicationCancellation.Token);
-                if (settingsGeneration != _settingsGeneration)
+                if (settingsGeneration != _settingsGeneration || rangeGeneration != _rangeGeneration)
                 {
                     return;
                 }
@@ -962,12 +1301,13 @@ namespace StockPerpTicker
         {
             if (_instrument != null)
             {
+                _chart.SetLineMode(IsFearGreedSelected);
                 _chart.SetDetailsTransparency(_settings.candleDetailsTransparencyPercent
                     ?? SettingsStore.DefaultCandleDetailsTransparencyPercent);
                 _chart.SetData(
                     _candles,
                     _snapshot,
-                    _currentRange,
+                    GetDisplayRange(),
                     _instrument.TickSize,
                     _settings.movingAverages,
                     _settings.SelectedTimeZone);
@@ -978,7 +1318,9 @@ namespace StockPerpTicker
                         _snapshot,
                         _candles,
                         _instrument.TickSize,
-                        false);
+                        false,
+                        IsFearGreedSelected && (_fearGreedFetchError != null || (_fearGreedData != null
+                            && DateTime.UtcNow - _fearGreedData.UpdatedAtUtc > TimeSpan.FromDays(FearGreedStaleDays))));
                 }
             }
         }
@@ -992,11 +1334,12 @@ namespace StockPerpTicker
             }
 
             _priceLabel.Text = FormatHelper.Price(_snapshot.LastPrice, _instrument.TickSize);
-            decimal change = _snapshot.ChangePercent;
+            decimal change = IsFearGreedSelected ? _snapshot.LastPrice - _snapshot.Open24Hours : _snapshot.ChangePercent;
             Color color = change >= decimal.Zero ? UpColor : DownColor;
             _priceLabel.ForeColor = color;
             _changeLabel.ForeColor = color;
-            _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00") + "%";
+            _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString(IsFearGreedSelected ? "0.##" : "0.00")
+                + (IsFearGreedSelected ? "点" : "%");
             _notifyIcon.Text = (_instrument.InstrumentId + "  " + _priceLabel.Text).Substring(0, Math.Min(63, _instrument.InstrumentId.Length + 2 + _priceLabel.Text.Length));
         }
 
@@ -1076,7 +1419,9 @@ namespace StockPerpTicker
             string refreshText = _renderTimer.Interval % 1000 == default(int)
                 ? (_renderTimer.Interval / 1000m).ToString("0.##") + "秒刷新"
                 : _renderTimer.Interval + "毫秒刷新";
-            _statusLabel.Text = "● " + message + " · " + _currentRange.PeriodLabel + " · " + refreshText;
+            _statusLabel.Text = IsFearGreedSelected
+                ? "● " + message + " · 日度折线 · 5分钟检查"
+                : "● " + message + " · " + _currentRange.PeriodLabel + " · " + refreshText;
         }
 
         private void UpdateClock()
@@ -1160,13 +1505,17 @@ namespace StockPerpTicker
                     targetRange.SelectedPeriodKey,
                     StringComparison.Ordinal);
             string currentInstrumentId = _instrument == null ? _selectedInstrumentId : _instrument.InstrumentId;
-            string targetInstrumentId = candidate.instrumentIds.Any(
+            bool keepFearGreedSelection = candidate.trackCnnFearGreed
+                && string.Equals(currentInstrumentId, FearGreedInstrument.Id, StringComparison.Ordinal);
+            string targetInstrumentId = keepFearGreedSelection || candidate.instrumentIds.Any(
                 item => string.Equals(item, currentInstrumentId, StringComparison.OrdinalIgnoreCase))
                 ? currentInstrumentId
                 : candidate.instrumentIds[0];
             bool instrumentChanged = _instrument == null
                 || !string.Equals(_instrument.InstrumentId, targetInstrumentId, StringComparison.OrdinalIgnoreCase);
             bool displayTimeZoneChanged = _settings.SelectedTimeZone != candidate.SelectedTimeZone;
+            bool fearGreedRangeChanged = !string.Equals(_settings.fearGreedTimeRange,
+                candidate.fearGreedTimeRange, StringComparison.Ordinal);
             try
             {
                 Dictionary<string, InstrumentInfo> validatedInstruments = await ValidateInstrumentSetAsync(
@@ -1176,8 +1525,8 @@ namespace StockPerpTicker
                 ++_settingsGeneration;
                 _settings = SettingsStore.Clone(candidate);
                 _currentRange = targetRange;
-                SelectPeriod(targetRange.SelectedPeriodKey);
                 _selectedInstrumentId = targetInstrumentId;
+                UpdateChartSelector();
                 ReplaceInstrumentInfos(validatedInstruments);
                 RebuildInstrumentButtons();
                 _renderTimer.Interval = _settings.refreshIntervalMilliseconds;
@@ -1185,6 +1534,7 @@ namespace StockPerpTicker
                 _miniTickerIndex = default(int);
                 ConfigureTaskbarTicker();
                 UpdateClock();
+                Logger.Info("CNN 恐惧贪婪指数追踪设置：" + _settings.trackCnnFearGreed);
                 if (displayTimeZoneChanged)
                 {
                     Logger.Info("时间显示时区已切换为：" + _settings.timeZone);
@@ -1197,7 +1547,7 @@ namespace StockPerpTicker
                         + " / " + targetRange.RestBar);
                     await ActivateInstrumentAsync(targetInstrumentId, true);
                 }
-                else if (chartConfigurationChanged)
+                else if (IsFearGreedSelected ? fearGreedRangeChanged : chartConfigurationChanged)
                 {
                     Logger.Info(
                         "设置已保存，正在切换 K 线配置：" + targetRange.Key + " / " + targetRange.RestBar);
@@ -1208,7 +1558,14 @@ namespace StockPerpTicker
                 {
                     RenderMarket();
                     UpdateHeader();
-                    SetConnectionStatus(previousStatus, previousMessage);
+                    if (IsFearGreedSelected && _fearGreedData != null && _fearGreedFetchError == null)
+                    {
+                        ApplyFearGreedData(_fearGreedData);
+                    }
+                    else
+                    {
+                        SetConnectionStatus(previousStatus, previousMessage);
+                    }
                     Logger.Info("行情设置已保存并应用。");
                 }
 
@@ -1254,13 +1611,14 @@ namespace StockPerpTicker
         private void StartMiniTickerRotation()
         {
             _miniTickerRotationTimer.Stop();
-            if (_taskbarTicker == null || !_taskbarTicker.Visible || _settings.instrumentIds.Length <= 1)
+            string[] instruments = GetTrackedInstrumentIds();
+            if (_taskbarTicker == null || !_taskbarTicker.Visible || instruments.Length <= SingleInstrumentCount)
             {
                 return;
             }
 
             int activeIndex = Array.FindIndex(
-                _settings.instrumentIds,
+                instruments,
                 item => string.Equals(item, _selectedInstrumentId, StringComparison.OrdinalIgnoreCase));
             _miniTickerIndex = activeIndex >= default(int) ? activeIndex : default(int);
             _miniTickerRotationTimer.Interval = _settings.taskbarTickerRotationIntervalSeconds * 1000;
@@ -1269,10 +1627,11 @@ namespace StockPerpTicker
 
         private async Task RotateMiniTickerAsync()
         {
+            string[] instruments = GetTrackedInstrumentIds();
             if (_miniTickerBusy
                 || _taskbarTicker == null
                 || !_taskbarTicker.Visible
-                || _settings.instrumentIds.Length <= 1
+                || instruments.Length <= SingleInstrumentCount
                 || _applicationCancellation.IsCancellationRequested)
             {
                 return;
@@ -1283,8 +1642,39 @@ namespace StockPerpTicker
             TaskbarTickerForm ticker = _taskbarTicker;
             try
             {
-                _miniTickerIndex = (_miniTickerIndex + 1) % _settings.instrumentIds.Length;
-                string instrumentId = _settings.instrumentIds[_miniTickerIndex];
+                _miniTickerIndex = (_miniTickerIndex + 1) % instruments.Length;
+                string instrumentId = instruments[_miniTickerIndex];
+                if (string.Equals(instrumentId, FearGreedInstrument.Id, StringComparison.Ordinal))
+                {
+                    FearGreedData data = null;
+                    bool unavailable = false;
+                    try
+                    {
+                        data = await GetFearGreedDataAsync();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        data = _fearGreedData;
+                        unavailable = true;
+                        Logger.Error("迷你行情 CNN 指数更新失败", ex);
+                    }
+
+                    if (settingsGeneration == _settingsGeneration && ReferenceEquals(ticker, _taskbarTicker)
+                        && ticker.Visible)
+                    {
+                        bool stale = unavailable || (data != null
+                            && DateTime.UtcNow - data.UpdatedAtUtc > TimeSpan.FromDays(FearGreedStaleDays));
+                        ticker.UpdateMarket(instrumentId, data == null ? null : data.Snapshot,
+                            EmptyCandles, FearGreedInstrument.TickSize, true, stale);
+                    }
+
+                    return;
+                }
+
                 InstrumentInfo instrument;
                 if (!_instrumentInfos.TryGetValue(instrumentId, out instrument))
                 {
@@ -1582,6 +1972,7 @@ namespace StockPerpTicker
             _clockTimer.Stop();
             _tickerTimer.Stop();
             _fallbackTimer.Stop();
+            _fearGreedTimer.Stop();
             _renderTimer.Stop();
             _memoryTimer.Stop();
             _miniTickerRotationTimer.Stop();
@@ -1746,6 +2137,7 @@ namespace StockPerpTicker
                 _clockTimer.Dispose();
                 _tickerTimer.Dispose();
                 _fallbackTimer.Dispose();
+                _fearGreedTimer.Dispose();
                 _renderTimer.Dispose();
                 _memoryTimer.Dispose();
                 _miniTickerRotationTimer.Dispose();

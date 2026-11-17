@@ -26,6 +26,7 @@ namespace StockPerpTicker
         private readonly ComboBox _timeRangeComboBox;
         private readonly Label _chartConfigHint;
         private readonly Dictionary<int, CheckBox> _movingAverageChecks;
+        private readonly CheckBox _trackCnnFearGreedCheckBox;
         private readonly CheckBox _showTaskbarTickerCheckBox;
         private readonly Label _tickerPositionLabel;
         private readonly ComboBox _tickerPositionComboBox;
@@ -35,6 +36,7 @@ namespace StockPerpTicker
         private readonly Label _tickerRotationUnitLabel;
         private readonly ErrorProvider _errorProvider;
         private bool _hasCustomTickerLocation;
+        private string _fearGreedTimeRange;
         private int _customTickerLeft;
         private int _customTickerTop;
 
@@ -184,7 +186,21 @@ namespace StockPerpTicker
                 new Point(16, 174),
                 new Size(430, 24)));
 
-            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 230), new Size(464, 78));
+            GroupBox sentimentGroup = CreateGroup("市场情绪", new Point(18, 230), new Size(464, 112));
+            _trackCnnFearGreedCheckBox = new CheckBox
+            {
+                AutoSize = true,
+                Location = new Point(16, 24),
+                Text = "追踪 CNN 恐惧贪婪指数"
+            };
+            sentimentGroup.Controls.Add(_trackCnnFearGreedCheckBox);
+            sentimentGroup.Controls.Add(CreateHint(
+                "开启后加入标的列表，以日度折线显示；数据由 CNN 提供，每5分钟检查更新。"
+                    + "CNN 使用独立时间范围，在主窗口底部选择；默认 1 年。",
+                new Point(16, 54),
+                new Size(430, 48)));
+
+            GroupBox refreshGroup = CreateGroup("刷新频率", new Point(18, 350), new Size(464, 78));
             _refreshIntervalInput = new NumericUpDown
             {
                 Location = new Point(16, 25),
@@ -198,7 +214,7 @@ namespace StockPerpTicker
             refreshGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(153, 28), Text = "毫秒" });
             refreshGroup.Controls.Add(CreateHint("仅影响界面绘制，网络行情会持续接收", new Point(211, 27), new Size(235, 21)));
 
-            GroupBox timeZoneGroup = CreateGroup("时间显示", new Point(18, 316), new Size(464, 78));
+            GroupBox timeZoneGroup = CreateGroup("时间显示", new Point(18, 436), new Size(464, 78));
             timeZoneGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "时区" });
             _timeZoneComboBox = new ComboBox
             {
@@ -217,12 +233,12 @@ namespace StockPerpTicker
                 new Point(266, 27),
                 new Size(180, 36)));
 
-            GroupBox chartGroup = CreateGroup("K 线显示", new Point(18, 402), new Size(464, 146));
-            chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "周期" });
+            GroupBox chartGroup = CreateGroup("图表显示", new Point(18, 522), new Size(464, 146));
+            chartGroup.Controls.Add(new Label { AutoSize = true, Location = new Point(16, 28), Text = "OKX周期" });
             _candlePeriodComboBox = new ComboBox
             {
-                Location = new Point(60, 23),
-                Size = new Size(142, 25),
+                Location = new Point(84, 23),
+                Size = new Size(118, 25),
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             foreach (CandlePeriodDefinition period in CandlePeriodDefinition.All)
@@ -271,7 +287,7 @@ namespace StockPerpTicker
                 UpdateChartConfigHint();
             };
 
-            GroupBox movingAverageGroup = CreateGroup("移动平均线", new Point(18, 556), new Size(464, 84));
+            GroupBox movingAverageGroup = CreateGroup("移动平均线（OKX）", new Point(18, 676), new Size(464, 84));
             FlowLayoutPanel movingAveragePanel = new FlowLayoutPanel
             {
                 Location = new Point(12, 25),
@@ -292,7 +308,7 @@ namespace StockPerpTicker
             }
             movingAverageGroup.Controls.Add(movingAveragePanel);
 
-            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 648), new Size(464, 154));
+            GroupBox taskbarTickerGroup = CreateGroup("最小化行为", new Point(18, 768), new Size(464, 154));
             _showTaskbarTickerCheckBox = new CheckBox
             {
                 AutoSize = true,
@@ -337,6 +353,7 @@ namespace StockPerpTicker
             taskbarTickerGroup.Controls.Add(_tickerRotationUnitLabel);
 
             content.Controls.Add(instrumentGroup);
+            content.Controls.Add(sentimentGroup);
             content.Controls.Add(refreshGroup);
             content.Controls.Add(timeZoneGroup);
             content.Controls.Add(chartGroup);
@@ -397,6 +414,8 @@ namespace StockPerpTicker
 
         private void LoadSettings(AppSettings settings)
         {
+            _fearGreedTimeRange = FearGreedInstrument.NormalizeTimeRangeKey(settings.fearGreedTimeRange);
+            _trackCnnFearGreedCheckBox.Checked = settings.trackCnnFearGreed;
             _detailsTransparencyInput.Value = Math.Max(
                 SettingsStore.MinimumCandleDetailsTransparencyPercent,
                 Math.Min(SettingsStore.MaximumCandleDetailsTransparencyPercent,
@@ -582,6 +601,8 @@ namespace StockPerpTicker
                 timeZone = GetSelectedTimeZone(),
                 candleDetailsTransparencyPercent = decimal.ToInt32(_detailsTransparencyInput.Value),
                 movingAverages = movingAverages.ToArray(),
+                trackCnnFearGreed = _trackCnnFearGreedCheckBox.Checked,
+                fearGreedTimeRange = _fearGreedTimeRange,
                 showTaskbarTickerOnMinimize = _showTaskbarTickerCheckBox.Checked,
                 taskbarTickerPosition = GetSelectedTickerPosition(),
                 hasCustomTaskbarTickerPosition = _hasCustomTickerLocation,
@@ -616,6 +637,7 @@ namespace StockPerpTicker
             }
 
             Settings = normalizedSettings;
+            Logger.Info("设置窗口已确认：CNN 恐惧贪婪指数追踪 " + normalizedSettings.trackCnnFearGreed);
             DialogResult = DialogResult.OK;
             Close();
         }

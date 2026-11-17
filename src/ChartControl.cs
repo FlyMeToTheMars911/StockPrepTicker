@@ -13,6 +13,23 @@ namespace StockPerpTicker
         private const int EmptyCandleCount = 0;
         private const int ChartHeaderHeight = 46;
         private const int RightAxisWidth = 62;
+        private const int IndexRightAxisWidth = 76;
+        private const int IndexAlignedAxisMinimumHeight = 180;
+        private const int IndexLegendRowHeight = 20;
+        private const int IndexLegendMargin = 3;
+        private const int IndexAxisNumberLeft = 1;
+        private const int IndexAxisNumberWidth = 24;
+        private const int IndexAxisLabelOffset = 26;
+        private const int IndexCompactLegendRowHeight = 24;
+        private const int IndexCompactLabelHeight = 14;
+        private const int IndexCompactRangeHeight = 10;
+        private const int IndexBandFillAlpha = 10;
+        private const int IndexThresholdAlpha = 155;
+        private const int IndexCurrentTagWidth = 54;
+        private const int MaximumIndexTimeLabels = 5;
+        private const int IndexTimeLabelGap = 12;
+        private const int IndexTimeLabelPadding = 4;
+        private const float IndexLineWidth = 2.4f;
         private const int BottomAxisHeight = 42;
         private const int LeftPadding = 8;
         private const int RightPadding = 2;
@@ -55,6 +72,11 @@ namespace StockPerpTicker
         private const int DetailsFooterHeight = 24;
         private const int DetailsCloseSize = 24;
         private const int DetailsRowCount = 10;
+        private const int IndexDetailsRowCount = 4;
+        private const int SingleDataPointCount = 1;
+        private const decimal MinimumIndexValue = 0m;
+        private const decimal MaximumIndexValue = 100m;
+        private const float IndexPointRadius = 3f;
         private const int FullOpacityAlpha = 255;
         private const int FullPercentage = 100;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
@@ -73,7 +95,11 @@ namespace StockPerpTicker
         private static readonly Color SessionTextColor = Color.FromArgb(55, 61, 75);
         private readonly Font _smallFont;
         private readonly Font _axisFont;
+        private readonly Font _indexAxisFont;
         private readonly Font _intervalTitleFont;
+        private readonly Font _indexLabelFont;
+        private readonly Font _indexCompactLabelFont;
+        private readonly Font _indexCompactRangeFont;
         private readonly ContextMenuStrip _drawingMenu;
         private readonly ToolStripMenuItem _intervalStatisticsMenuItem;
         private readonly ToolStripMenuItem _deleteIntervalStatisticsMenuItem;
@@ -88,6 +114,7 @@ namespace StockPerpTicker
         private int[] _movingAverages;
         private string _message;
         private bool _isError;
+        private bool _lineMode;
         private bool _chartLayerDirty;
         private bool _hoverVisible;
         private bool _isDragging;
@@ -124,7 +151,11 @@ namespace StockPerpTicker
             BackColor = Color.White;
             _smallFont = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point);
             _axisFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point);
+            _indexAxisFont = new Font("Segoe UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
             _intervalTitleFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
+            _indexLabelFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
+            _indexCompactLabelFont = new Font("Microsoft YaHei UI", 8f, FontStyle.Bold, GraphicsUnit.Point);
+            _indexCompactRangeFont = new Font("Segoe UI", 6.5f, FontStyle.Regular, GraphicsUnit.Point);
             _drawingMenu = new ContextMenuStrip { ShowImageMargin = false };
             _candleDetailsMenuItem = new ToolStripMenuItem("查看详情");
             _candleDetailsMenuItem.Click += delegate { ShowCandleDetails(); };
@@ -143,6 +174,20 @@ namespace StockPerpTicker
             _movingAverages = new int[0];
             _message = "正在加载行情…";
             _chartLayerDirty = true;
+        }
+
+        internal void SetLineMode(bool enabled)
+        {
+            if (_lineMode == enabled)
+            {
+                return;
+            }
+
+            _lineMode = enabled;
+            _isDragging = false;
+            Capture = false;
+            ResetViewport();
+            Logger.Info("图表显示模式：" + (_lineMode ? "CNN 指数折线" : "K 线"));
         }
 
         internal void SetData(
@@ -233,7 +278,11 @@ namespace StockPerpTicker
             {
                 _smallFont.Dispose();
                 _axisFont.Dispose();
+                _indexAxisFont.Dispose();
                 _intervalTitleFont.Dispose();
+                _indexLabelFont.Dispose();
+                _indexCompactLabelFont.Dispose();
+                _indexCompactRangeFont.Dispose();
                 _drawingMenu.Dispose();
                 if (_chartLayer != null)
                 {
@@ -464,7 +513,7 @@ namespace StockPerpTicker
             {
                 int visibleRows = GetDetailsVisibleRows();
                 _detailsScrollOffset = Math.Max(default(int), Math.Min(
-                    DetailsRowCount - visibleRows, _detailsScrollOffset - Math.Sign(e.Delta)));
+                    GetDetailsRowCount() - visibleRows, _detailsScrollOffset - Math.Sign(e.Delta)));
                 Invalidate();
                 return;
             }
@@ -590,10 +639,11 @@ namespace StockPerpTicker
             UpdateIntervalStatistics();
             if (_intervalStatistics != null)
             {
-                Logger.Info(
-                    "完成区间统计：" + _intervalStatistics.CandleCount + " 根 K 线，涨跌 "
-                    + FormatSignedPrice(_intervalStatistics.ChangeValue) + "（"
-                    + FormatSignedPercentage(_intervalStatistics.ChangePercent) + "）");
+                string changeDescription = _lineMode
+                    ? " 个数据点，指数变动 " + FormatSignedPrice(_intervalStatistics.ChangeValue) + " 点"
+                    : " 根 K 线，涨跌 " + FormatSignedPrice(_intervalStatistics.ChangeValue) + "（"
+                        + FormatSignedPercentage(_intervalStatistics.ChangePercent) + "）";
+                Logger.Info("完成区间统计：" + _intervalStatistics.CandleCount + changeDescription);
             }
 
             Invalidate();
@@ -835,7 +885,7 @@ namespace StockPerpTicker
                     Math.Min(_lastPlotArea.Right - HintWidth, markerX + 5f));
                 RectangleF hintBounds = new RectangleF(hintLeft, _lastPlotArea.Top + 4f, HintWidth, HintHeight);
                 graphics.FillRectangle(labelBrush, hintBounds);
-                graphics.DrawString("点击另一根 K 线完成", _smallFont, textBrush, hintBounds);
+                graphics.DrawString(_lineMode ? "点击另一数据点完成" : "点击另一根 K 线完成", _smallFont, textBrush, hintBounds);
             }
         }
 
@@ -906,8 +956,10 @@ namespace StockPerpTicker
                 textTop += IntervalTooltipLineHeight;
                 DrawIntervalTooltipRow(
                     graphics,
-                    "K 线数量  " + _intervalStatistics.CandleCount + "    成交量  "
-                        + FormatHelper.CompactNumber(_intervalStatistics.TotalVolume),
+                    _lineMode
+                        ? "数据点数量  " + _intervalStatistics.CandleCount
+                        : "K 线数量  " + _intervalStatistics.CandleCount + "    成交量  "
+                            + FormatHelper.CompactNumber(_intervalStatistics.TotalVolume),
                     primaryBrush,
                     rowFormat,
                     textLeft,
@@ -916,8 +968,8 @@ namespace StockPerpTicker
                 textTop += IntervalTooltipLineHeight;
                 DrawIntervalTooltipRow(
                     graphics,
-                    "起始收盘  " + FormatHelper.Price(_intervalStatistics.StartClose, _tickSize)
-                        + "    结束收盘  " + FormatHelper.Price(_intervalStatistics.EndClose, _tickSize),
+                    (_lineMode ? "起始指数  " : "起始收盘  ") + FormatHelper.Price(_intervalStatistics.StartClose, _tickSize)
+                        + (_lineMode ? "    结束指数  " : "    结束收盘  ") + FormatHelper.Price(_intervalStatistics.EndClose, _tickSize),
                     primaryBrush,
                     rowFormat,
                     textLeft,
@@ -926,8 +978,10 @@ namespace StockPerpTicker
                 textTop += IntervalTooltipLineHeight;
                 DrawIntervalTooltipRow(
                     graphics,
-                    "涨跌值  " + FormatSignedPrice(_intervalStatistics.ChangeValue)
-                        + "    涨跌幅  " + FormatSignedPercentage(_intervalStatistics.ChangePercent),
+                    _lineMode
+                        ? "指数变动  " + FormatSignedPrice(_intervalStatistics.ChangeValue) + " 点"
+                        : "涨跌值  " + FormatSignedPrice(_intervalStatistics.ChangeValue)
+                            + "    涨跌幅  " + FormatSignedPercentage(_intervalStatistics.ChangePercent),
                     changeBrush,
                     rowFormat,
                     textLeft,
@@ -990,7 +1044,8 @@ namespace StockPerpTicker
             _detailsScrollOffset = default(int);
             _hoverVisible = false;
             _intervalHovered = false;
-            Logger.Info("查看 K 线详情：时间戳 " + _detailsCandle.Timestamp + " / 周期 " + _range.RestBar);
+            Logger.Info((_lineMode ? "查看 CNN 指数详情：时间戳 " : "查看 K 线详情：时间戳 ")
+                + _detailsCandle.Timestamp + " / 周期 " + _range.RestBar);
             Invalidate();
         }
 
@@ -998,7 +1053,8 @@ namespace StockPerpTicker
         {
             if (_detailsCandle != null)
             {
-                Logger.Info("关闭 K 线详情：时间戳 " + _detailsCandle.Timestamp + " / " + reason);
+                Logger.Info((_lineMode ? "关闭 CNN 指数详情：时间戳 " : "关闭 K 线详情：时间戳 ")
+                    + _detailsCandle.Timestamp + " / " + reason);
             }
             _detailsCandle = null;
             _detailsInHistory = false;
@@ -1009,7 +1065,10 @@ namespace StockPerpTicker
         private Rectangle GetDetailsBounds()
         {
             int width = Math.Min(DetailsWidth, Math.Max(1, ClientSize.Width - DetailsMargin * 2));
-            int height = Math.Min(DetailsHeight, Math.Max(1, ClientSize.Height - DetailsMargin * 2));
+            int preferredHeight = _lineMode
+                ? DetailsTitleHeight + IndexDetailsRowCount * DetailsRowHeight + DetailsFooterHeight
+                : DetailsHeight;
+            int height = Math.Min(preferredHeight, Math.Max(1, ClientSize.Height - DetailsMargin * 2));
             int top = Math.Max(DetailsMargin,
                 Math.Min(ChartHeaderHeight, ClientSize.Height - height - DetailsMargin));
             return new Rectangle(DetailsMargin, top, width, height);
@@ -1022,15 +1081,31 @@ namespace StockPerpTicker
                 bounds.Top + (DetailsTitleHeight - DetailsCloseSize) / 2, DetailsCloseSize, DetailsCloseSize);
         }
 
+        private int GetDetailsRowCount()
+        {
+            return _lineMode ? IndexDetailsRowCount : DetailsRowCount;
+        }
+
         private int GetDetailsVisibleRows()
         {
-            return Math.Max(1, Math.Min(DetailsRowCount,
+            return Math.Max(1, Math.Min(GetDetailsRowCount(),
                 (GetDetailsBounds().Height - DetailsTitleHeight - DetailsFooterHeight) / DetailsRowHeight));
         }
 
         private string[] GetDetailsValues()
         {
             Candle candle = _detailsCandle;
+            if (_lineMode)
+            {
+                return new[]
+                {
+                    GetDisplayTime(candle).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    FormatHelper.Price(candle.Close, _tickSize),
+                    FearGreedInstrument.GetRating(candle.Close),
+                    _displayTimeZone == DisplayTimeZone.UsEastern ? "美东时间" : "北京时间"
+                };
+            }
+
             decimal change = candle.Close - candle.Open;
             bool hasOpeningPrice = candle.Open != decimal.Zero;
             return new[]
@@ -1058,8 +1133,11 @@ namespace StockPerpTicker
             Rectangle bounds = GetDetailsBounds();
             Rectangle closeBounds = GetDetailsCloseBounds();
             int visibleRows = GetDetailsVisibleRows();
-            _detailsScrollOffset = Math.Min(_detailsScrollOffset, DetailsRowCount - visibleRows);
-            string[] labels = { "开盘时间", "开盘价", "最高价", "最低价", "收盘价", "成交量", "涨跌值", "涨跌幅", "振幅", "时区" };
+            int rowCount = GetDetailsRowCount();
+            _detailsScrollOffset = Math.Min(_detailsScrollOffset, rowCount - visibleRows);
+            string[] labels = _lineMode
+                ? new[] { "数据日期", "指数", "市场情绪", "时区" }
+                : new[] { "开盘时间", "开盘价", "最高价", "最低价", "收盘价", "成交量", "涨跌值", "涨跌幅", "振幅", "时区" };
             string[] values = GetDetailsValues();
             const int ChangeValueRow = 6;
             const int ChangePercentRow = 7;
@@ -1078,7 +1156,7 @@ namespace StockPerpTicker
             {
                 graphics.FillRectangle(background, bounds);
                 graphics.DrawRectangle(border, bounds);
-                graphics.DrawString("K 线详情 · " + _range.PeriodLabel, _intervalTitleFont, foreground,
+                graphics.DrawString(_lineMode ? "CNN 指数详情 · 日频" : "K 线详情 · " + _range.PeriodLabel, _intervalTitleFont, foreground,
                     new RectangleF(bounds.Left + DetailsMargin, bounds.Top + 4,
                         bounds.Width - DetailsCloseSize - DetailsMargin * 3, DetailsTitleHeight), format);
                 graphics.DrawString("×", _intervalTitleFont, foreground, closeBounds, closeFormat);
@@ -1093,10 +1171,14 @@ namespace StockPerpTicker
                         new RectangleF(bounds.Left + ValueLeftOffset, top,
                             bounds.Width - ValueLeftOffset - DetailsMargin, DetailsRowHeight), format);
                 }
-                string hint = visibleRows < DetailsRowCount ? "滚轮查看更多 · 涨跌/振幅相对开盘" : "涨跌/振幅相对开盘";
+                string hint = _lineMode ? "指数范围 0～100 · 来源 CNN" : "涨跌/振幅相对开盘";
                 if (!_detailsInHistory)
                 {
-                    hint = visibleRows < DetailsRowCount ? "滚轮查看更多 · 已保留最后数据" : "历史窗口外：保留最后数据 · 涨跌相对开盘";
+                    hint = "历史窗口外：保留最后数据";
+                }
+                if (visibleRows < rowCount)
+                {
+                    hint = "滚轮查看更多 · " + hint;
                 }
                 graphics.DrawString(hint, _axisFont, secondary,
                     new RectangleF(bounds.Left + DetailsMargin, bounds.Bottom - DetailsFooterHeight,
@@ -1177,9 +1259,17 @@ namespace StockPerpTicker
                 maximum = minimum + (_tickSize > decimal.Zero ? _tickSize : 0.01m);
             }
 
-            decimal pricePadding = (maximum - minimum) * 0.06m;
-            minimum -= pricePadding;
-            maximum += pricePadding;
+            if (_lineMode)
+            {
+                minimum = MinimumIndexValue;
+                maximum = MaximumIndexValue;
+            }
+            else
+            {
+                decimal pricePadding = (maximum - minimum) * 0.06m;
+                minimum -= pricePadding;
+                maximum += pricePadding;
+            }
 
             _lastPlotArea = plotArea;
             _lastPriceArea = priceArea;
@@ -1190,14 +1280,21 @@ namespace StockPerpTicker
             _lastLayoutValid = true;
 
             DrawGrid(graphics, plotArea, priceArea, minimum, maximum);
-            DrawCandles(graphics, priceArea, volumeArea, minimum, maximum, maximumVolume, visibleStart, visibleCount);
-            DrawMovingAverages(graphics, priceArea, minimum, maximum, visibleStart, visibleCount);
+            if (_lineMode)
+            {
+                DrawIndexLine(graphics, priceArea, minimum, maximum, visibleStart, visibleCount);
+            }
+            else
+            {
+                DrawCandles(graphics, priceArea, volumeArea, minimum, maximum, maximumVolume, visibleStart, visibleCount);
+                DrawMovingAverages(graphics, priceArea, minimum, maximum, visibleStart, visibleCount);
+            }
             DrawHeader(graphics, client);
             DrawTimeAxis(graphics, plotArea, visibleStart, visibleCount);
             DrawCurrentPrice(graphics, plotArea, priceArea, minimum, maximum);
         }
 
-        private static void GetChartAreas(
+        private void GetChartAreas(
             Rectangle client,
             out Rectangle plotArea,
             out Rectangle priceArea,
@@ -1206,9 +1303,9 @@ namespace StockPerpTicker
             plotArea = new Rectangle(
                 LeftPadding,
                 ChartHeaderHeight,
-                Math.Max(1, client.Width - LeftPadding - RightAxisWidth - RightPadding),
+                Math.Max(1, client.Width - LeftPadding - (_lineMode ? IndexRightAxisWidth : RightAxisWidth) - RightPadding),
                 Math.Max(1, client.Height - ChartHeaderHeight - BottomAxisHeight));
-            int volumeHeight = Math.Max(34, plotArea.Height / 5);
+            int volumeHeight = _lineMode ? default(int) : Math.Max(34, plotArea.Height / 5);
             priceArea = new Rectangle(plotArea.Left, plotArea.Top, plotArea.Width, Math.Max(1, plotArea.Height - volumeHeight));
             volumeArea = new Rectangle(plotArea.Left, priceArea.Bottom, plotArea.Width, volumeHeight);
         }
@@ -1308,13 +1405,18 @@ namespace StockPerpTicker
 
         private void DrawGrid(Graphics graphics, Rectangle plotArea, Rectangle priceArea, decimal minimum, decimal maximum)
         {
+            if (_lineMode)
+            {
+                DrawIndexLevels(graphics, plotArea, priceArea, minimum, maximum);
+            }
+
             using (Pen gridPen = new Pen(GridColor, 1f))
             using (SolidBrush axisBrush = new SolidBrush(SecondaryTextColor))
             using (StringFormat nearFormat = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center })
             {
                 gridPen.DashStyle = DashStyle.Dot;
                 const int HorizontalLines = 5;
-                for (int index = 0; index <= HorizontalLines; index++)
+                for (int index = 0; !_lineMode && index <= HorizontalLines; index++)
                 {
                     float ratio = index / (float)HorizontalLines;
                     int y = priceArea.Top + (int)Math.Round(priceArea.Height * ratio);
@@ -1329,6 +1431,109 @@ namespace StockPerpTicker
                 {
                     int x = plotArea.Left + (int)Math.Round(plotArea.Width * index / (float)VerticalLines);
                     graphics.DrawLine(gridPen, x, plotArea.Top, x, plotArea.Bottom);
+                }
+            }
+        }
+
+        /// <summary>Draws CNN's fixed sentiment bands, boundary waterlines and right axis labels.</summary>
+        /// <param name="graphics">The chart layer drawing surface.</param>
+        /// <param name="plotArea">The visible plot bounds.</param>
+        /// <param name="priceArea">The fixed zero-to-one-hundred index area.</param>
+        /// <param name="minimum">The index axis minimum.</param>
+        /// <param name="maximum">The index axis maximum.</param>
+        /// <returns>No value.</returns>
+        private void DrawIndexLevels(Graphics graphics, Rectangle plotArea, Rectangle priceArea, decimal minimum, decimal maximum)
+        {
+            FearGreedBand[] bands = FearGreedInstrument.Bands;
+            bool alignLabels = priceArea.Height >= IndexAlignedAxisMinimumHeight;
+            using (StringFormat centered = new StringFormat(StringFormat.GenericTypographic)
+            {
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip
+            })
+            using (StringFormat compact = new StringFormat(StringFormat.GenericTypographic)
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip
+            })
+            {
+                foreach (FearGreedBand band in bands)
+                {
+                    float top = PriceToY(band.Maximum, priceArea, minimum, maximum);
+                    float bottom = PriceToY(band.Minimum, priceArea, minimum, maximum);
+                    using (Brush background = new SolidBrush(Color.FromArgb(IndexBandFillAlpha, band.Color)))
+                    using (Brush edge = new SolidBrush(band.Color))
+                    {
+                        graphics.FillRectangle(background, plotArea.Left, top, plotArea.Width, bottom - top);
+                        graphics.FillRectangle(edge, plotArea.Right, top, 3f, Math.Max(1f, bottom - top));
+                    }
+
+                    DrawIndexWaterline(graphics, plotArea, priceArea, band.Minimum, minimum, maximum, alignLabels, compact);
+                    if (alignLabels)
+                    {
+                        using (Brush text = new SolidBrush(band.Color))
+                        {
+                            graphics.DrawString(band.Label, _indexLabelFont, text,
+                                new RectangleF(plotArea.Right + IndexAxisLabelOffset,
+                                    (top + bottom - IndexLegendRowHeight) / 2f,
+                                    IndexRightAxisWidth - IndexAxisLabelOffset, IndexLegendRowHeight), centered);
+                        }
+                    }
+                }
+
+                DrawIndexWaterline(graphics, plotArea, priceArea, maximum, minimum, maximum, alignLabels, compact);
+                if (!alignLabels)
+                {
+                    int legendHeight = bands.Length * IndexCompactLegendRowHeight;
+                    int legendTop = Math.Max(0, (ClientSize.Height - legendHeight) / 2);
+                    for (int index = default(int); index < bands.Length; index++)
+                    {
+                        FearGreedBand band = bands[bands.Length - index - 1];
+                        int rowTop = legendTop + index * IndexCompactLegendRowHeight;
+                        float left = plotArea.Right + IndexLegendMargin;
+                        using (Brush text = new SolidBrush(band.Color))
+                        {
+                            graphics.FillRectangle(text, left + 1, rowTop + 4, 2, 16);
+                            graphics.DrawString(band.Label, _indexCompactLabelFont, text,
+                                new RectangleF(left + 5, rowTop,
+                                    IndexRightAxisWidth - IndexLegendMargin - 6, IndexCompactLabelHeight), compact);
+                            string range = band.Minimum.ToString("0", CultureInfo.InvariantCulture)
+                                + "–" + band.Maximum.ToString("0", CultureInfo.InvariantCulture);
+                            graphics.DrawString(range, _indexCompactRangeFont, text,
+                                new RectangleF(left + 5, rowTop + IndexCompactLabelHeight,
+                                    IndexRightAxisWidth - IndexLegendMargin - 6, IndexCompactRangeHeight), compact);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>Draws a horizontal sentiment boundary at its real index value.</summary>
+        /// <param name="graphics">The chart layer drawing surface.</param>
+        /// <param name="plotArea">The visible plot bounds.</param>
+        /// <param name="priceArea">The fixed index plotting area.</param>
+        /// <param name="value">The boundary's index value.</param>
+        /// <param name="minimum">The index axis minimum.</param>
+        /// <param name="maximum">The index axis maximum.</param>
+        /// <param name="showNumber">Whether the axis has enough height for aligned boundary numbers.</param>
+        /// <param name="format">The boundary label alignment.</param>
+        /// <returns>No value.</returns>
+        private void DrawIndexWaterline(Graphics graphics, Rectangle plotArea, Rectangle priceArea,
+            decimal value, decimal minimum, decimal maximum, bool showNumber, StringFormat format)
+        {
+            float y = PriceToY(value, priceArea, minimum, maximum);
+            Color color = FearGreedInstrument.GetColor(value);
+            using (Pen pen = new Pen(Color.FromArgb(IndexThresholdAlpha, color), 1f))
+            using (Brush text = new SolidBrush(color))
+            {
+                pen.DashStyle = DashStyle.Dash;
+                graphics.DrawLine(pen, plotArea.Left, y, plotArea.Right, y);
+                if (showNumber)
+                {
+                    graphics.DrawString(value.ToString("0", CultureInfo.InvariantCulture), _indexAxisFont, text,
+                        new RectangleF(plotArea.Right + IndexAxisNumberLeft, y - IndexLegendRowHeight / 2f,
+                            IndexAxisNumberWidth, IndexLegendRowHeight), format);
                 }
             }
         }
@@ -1384,9 +1589,119 @@ namespace StockPerpTicker
             }
         }
 
+        private void DrawIndexLine(
+            Graphics graphics,
+            Rectangle priceArea,
+            decimal minimum,
+            decimal maximum,
+            int visibleStart,
+            int visibleCount)
+        {
+            float step = priceArea.Width / (float)Math.Max(SingleDataPointCount, visibleCount);
+            SmoothingMode previousSmoothingMode = graphics.SmoothingMode;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Dictionary<int, Pen> pens = new Dictionary<int, Pen>();
+            try
+            {
+                foreach (FearGreedBand band in FearGreedInstrument.Bands)
+                {
+                    pens[band.Color.ToArgb()] = new Pen(band.Color, IndexLineWidth);
+                }
+
+                if (visibleCount > SingleDataPointCount)
+                {
+                    for (int index = SingleDataPointCount; index < visibleCount; index++)
+                    {
+                        decimal startValue = _candles[visibleStart + index - 1].Close;
+                        decimal endValue = _candles[visibleStart + index].Close;
+                        PointF start = new PointF(priceArea.Left + step * (index - 0.5f),
+                            PriceToY(startValue, priceArea, minimum, maximum));
+                        PointF end = new PointF(priceArea.Left + step * (index + 0.5f),
+                            PriceToY(endValue, priceArea, minimum, maximum));
+                        foreach (IndexLineSegment segment in SplitIndexLine(start, end, startValue, endValue))
+                        {
+                            graphics.DrawLine(pens[segment.Color.ToArgb()], segment.Start, segment.End);
+                        }
+                    }
+                }
+                else
+                {
+                    decimal value = _candles[visibleStart].Close;
+                    PointF point = new PointF(priceArea.Left + step * 0.5f, PriceToY(value, priceArea, minimum, maximum));
+                    using (Brush brush = new SolidBrush(FearGreedInstrument.GetColor(value)))
+                    {
+                        graphics.FillEllipse(brush, point.X - IndexPointRadius, point.Y - IndexPointRadius,
+                            IndexPointRadius * 2f, IndexPointRadius * 2f);
+                    }
+                }
+            }
+            finally
+            {
+                foreach (Pen pen in pens.Values)
+                {
+                    pen.Dispose();
+                }
+
+                graphics.SmoothingMode = previousSmoothingMode;
+            }
+        }
+
+        /// <summary>Splits a straight index edge at every crossed sentiment boundary.</summary>
+        /// <param name="start">The first screen coordinate.</param>
+        /// <param name="end">The second screen coordinate.</param>
+        /// <param name="startValue">The first unrounded index value.</param>
+        /// <param name="endValue">The second unrounded index value.</param>
+        /// <returns>Continuous segments whose colors match their complete value interval.</returns>
+        private static List<IndexLineSegment> SplitIndexLine(PointF start, PointF end, decimal startValue, decimal endValue)
+        {
+            List<decimal> cuts = new List<decimal> { decimal.Zero, decimal.One };
+            decimal difference = endValue - startValue;
+            decimal lower = Math.Min(startValue, endValue);
+            decimal upper = Math.Max(startValue, endValue);
+            foreach (decimal threshold in FearGreedInstrument.Thresholds)
+            {
+                if (threshold > lower && threshold < upper)
+                {
+                    cuts.Add((threshold - startValue) / difference);
+                }
+            }
+
+            cuts.Sort();
+            List<IndexLineSegment> segments = new List<IndexLineSegment>(cuts.Count - 1);
+            for (int index = SingleDataPointCount; index < cuts.Count; index++)
+            {
+                decimal from = cuts[index - 1];
+                decimal to = cuts[index];
+                decimal midpoint = startValue + difference * (from + to) / 2m;
+                segments.Add(new IndexLineSegment
+                {
+                    Start = new PointF(start.X + (end.X - start.X) * (float)from, start.Y + (end.Y - start.Y) * (float)from),
+                    End = new PointF(start.X + (end.X - start.X) * (float)to, start.Y + (end.Y - start.Y) * (float)to),
+                    Color = FearGreedInstrument.GetColor(midpoint)
+                });
+            }
+
+            return segments;
+        }
+
         private void DrawHeader(Graphics graphics, Rectangle client)
         {
             Candle latest = _candles[_candles.Count - 1];
+            if (_lineMode)
+            {
+                decimal current = _snapshot == null ? latest.Close : _snapshot.LastPrice;
+                using (Brush brush = new SolidBrush(FearGreedInstrument.GetColor(current)))
+                using (Brush secondary = new SolidBrush(SecondaryTextColor))
+                {
+                    string headline = "CNN 指数 " + FormatHelper.Price(current, _tickSize)
+                        + "  " + FearGreedInstrument.GetRating(current);
+                    graphics.DrawString(headline, _smallFont, brush,
+                        new RectangleF(8, 2, Math.Max(1, client.Width - IndexRightAxisWidth - LeftPadding - RightPadding), 20));
+                    graphics.DrawString("日频折线 · 分级水位 · 来源 CNN", _smallFont, secondary,
+                        new RectangleF(8, 22, Math.Max(1, client.Width - IndexRightAxisWidth - LeftPadding - RightPadding), 20));
+                }
+                return;
+            }
             Color changeColor = latest.Close >= latest.Open ? UpColor : DownColor;
             string ohlc = "开 " + FormatHelper.Price(latest.Open, _tickSize)
                 + "  高 " + FormatHelper.Price(latest.High, _tickSize)
@@ -1520,6 +1835,12 @@ namespace StockPerpTicker
                 return;
             }
 
+            if (_lineMode)
+            {
+                DrawIndexTimeAxis(graphics, plotArea, visibleStart, visibleCount);
+                return;
+            }
+
             bool showSessionBands = ShouldDrawUsMarketSessionBands();
             if (showSessionBands)
             {
@@ -1567,9 +1888,51 @@ namespace StockPerpTicker
             }
         }
 
+        /// <summary>Fits complete CNN date labels inside the plot without overlapping adjacent labels.</summary>
+        /// <param name="graphics">The chart layer drawing surface.</param>
+        /// <param name="plotArea">The plot bounds used to contain all date labels.</param>
+        /// <param name="visibleStart">The first visible daily observation.</param>
+        /// <param name="visibleCount">The number of visible daily observations.</param>
+        /// <returns>No value.</returns>
+        private void DrawIndexTimeAxis(Graphics graphics, Rectangle plotArea, int visibleStart, int visibleCount)
+        {
+            string dateFormat = _range.IsAllHistory || _range.DurationMinutes > OneYearMinutes
+                ? "yyyy-MM-dd" : "MM-dd";
+            float labelWidth = 0f;
+            for (int index = visibleStart; index < visibleStart + visibleCount; index++)
+            {
+                string date = GetDisplayTime(_candles[index]).ToString(dateFormat, CultureInfo.InvariantCulture);
+                labelWidth = Math.Max(labelWidth, graphics.MeasureString(date, _axisFont).Width);
+            }
+
+            labelWidth = Math.Min(plotArea.Width, (float)Math.Ceiling(labelWidth) + IndexTimeLabelPadding);
+            int labelCount = Math.Min(visibleCount, Math.Min(MaximumIndexTimeLabels,
+                Math.Max(1, (int)((plotArea.Width + IndexTimeLabelGap) / (labelWidth + IndexTimeLabelGap)))));
+            using (Brush brush = new SolidBrush(SecondaryTextColor))
+            using (StringFormat format = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                for (int index = default(int); index < labelCount; index++)
+                {
+                    float fraction = labelCount == SingleDataPointCount ? 0.5f : index / (float)(labelCount - 1);
+                    int candleIndex = visibleStart + (int)Math.Round((visibleCount - 1) * fraction);
+                    string date = GetDisplayTime(_candles[candleIndex]).ToString(dateFormat, CultureInfo.InvariantCulture);
+                    float left = plotArea.Left + (plotArea.Width - labelWidth) * fraction;
+                    graphics.DrawString(date, _axisFont, brush,
+                        new RectangleF(left, plotArea.Bottom + TimeLabelTopWithoutSessionBand,
+                            labelWidth, CrosshairLabelHeight), format);
+                }
+            }
+        }
+
         private bool ShouldDrawUsMarketSessionBands()
         {
-            return _displayTimeZone == DisplayTimeZone.UsEastern
+            return !_lineMode
+                && _displayTimeZone == DisplayTimeZone.UsEastern
                 && _range != null
                 && _range.PeriodDurationMinutes > default(long)
                 && _range.PeriodDurationMinutes < OneDayMinutes;
@@ -1805,11 +2168,11 @@ namespace StockPerpTicker
                 return;
             }
 
-            decimal current = _snapshot != null && _snapshot.LastPrice > decimal.Zero
+            decimal current = _snapshot != null && (_lineMode || _snapshot.LastPrice > decimal.Zero)
                 ? _snapshot.LastPrice
                 : _candles[_candles.Count - 1].Close;
             bool rising = _snapshot == null || _snapshot.Open24Hours == decimal.Zero || current >= _snapshot.Open24Hours;
-            Color color = rising ? UpColor : DownColor;
+            Color color = _lineMode ? FearGreedInstrument.GetColor(current) : rising ? UpColor : DownColor;
             float y = PriceToY(current, priceArea, minimum, maximum);
             using (Pen pen = new Pen(color, 1f))
             using (SolidBrush brush = new SolidBrush(color))
@@ -1818,7 +2181,11 @@ namespace StockPerpTicker
             {
                 pen.DashStyle = DashStyle.Dot;
                 graphics.DrawLine(pen, plotArea.Left, y, plotArea.Right, y);
-                RectangleF tag = new RectangleF(plotArea.Right + 2, y - 10, 59, 20);
+                RectangleF tag = _lineMode
+                    ? new RectangleF(plotArea.Right - IndexCurrentTagWidth - 3,
+                        Math.Max(priceArea.Top, Math.Min(priceArea.Bottom - CrosshairLabelHeight, y - CrosshairLabelHeight / 2f)),
+                        IndexCurrentTagWidth, CrosshairLabelHeight)
+                    : new RectangleF(plotArea.Right + 2, y - 10, 59, 20);
                 graphics.FillRectangle(brush, tag);
                 graphics.DrawString(FormatHelper.Price(current, _tickSize), _axisFont, whiteBrush, tag, format);
             }
@@ -1859,9 +2226,12 @@ namespace StockPerpTicker
                 graphics.DrawLine(crosshairPen, crosshairX, _lastPlotArea.Top, crosshairX, _lastPlotArea.Bottom);
 
                 RectangleF priceTag = new RectangleF(
-                    _lastPlotArea.Right + RightPadding,
-                    crosshairY - CrosshairLabelHeight / 2f,
-                    RightAxisWidth - RightPadding - 1,
+                    _lineMode ? _lastPlotArea.Right - IndexCurrentTagWidth - 3 : _lastPlotArea.Right + RightPadding,
+                    _lineMode
+                        ? Math.Max(_lastPriceArea.Top, Math.Min(_lastPriceArea.Bottom - CrosshairLabelHeight,
+                            crosshairY - CrosshairLabelHeight / 2f))
+                        : crosshairY - CrosshairLabelHeight / 2f,
+                    _lineMode ? IndexCurrentTagWidth : RightAxisWidth - RightPadding - 1,
                     CrosshairLabelHeight);
                 graphics.FillRectangle(labelBrush, priceTag);
                 graphics.DrawString(priceLabel, _axisFont, textBrush, priceTag, centerFormat);
@@ -1914,6 +2284,15 @@ namespace StockPerpTicker
             {
                 graphics.DrawString(message, messageFont, brush, new RectangleF(28, 28, client.Width - 56, client.Height - 56), format);
             }
+        }
+
+        /// <summary>Stores a continuous screen-space edge within a single CNN sentiment range.</summary>
+        /// <remarks>Author: Codex; date: 2026-11-17.</remarks>
+        private sealed class IndexLineSegment
+        {
+            internal PointF Start { get; set; }
+            internal PointF End { get; set; }
+            internal Color Color { get; set; }
         }
 
         private sealed class IntervalStatistics

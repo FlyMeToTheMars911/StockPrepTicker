@@ -98,19 +98,20 @@ namespace StockPerpTicker
             MarketSnapshot snapshot,
             IList<Candle> candles,
             decimal tickSize,
-            bool allowSwitch)
+            bool allowSwitch,
+            bool isStale = false)
         {
             if (_scrollTimer.Enabled
                 && string.Equals(_incomingPage.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
             {
-                _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
+                _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize, isStale);
                 return;
             }
 
             if (string.IsNullOrEmpty(_currentPage.InstrumentId)
                 || string.Equals(_currentPage.InstrumentId, instrumentId, StringComparison.OrdinalIgnoreCase))
             {
-                _currentPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
+                _currentPage.UpdateMarket(instrumentId, snapshot, candles, tickSize, isStale);
                 return;
             }
 
@@ -120,7 +121,7 @@ namespace StockPerpTicker
             }
 
             CompleteScrollAnimation();
-            _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize);
+            _incomingPage.UpdateMarket(instrumentId, snapshot, candles, tickSize, isStale);
             if (!Visible)
             {
                 SwapPages();
@@ -378,6 +379,8 @@ namespace StockPerpTicker
     internal sealed class TickerPage : Panel
     {
         private const int ContentCornerRadius = 5;
+        private const int ContentHeight = 32;
+        private const float RatingFontSize = 15f;
         private static readonly Color UpColor = Color.FromArgb(8, 153, 129);
         private static readonly Color DownColor = Color.FromArgb(242, 54, 69);
         private static readonly Color TextColor = Color.FromArgb(19, 23, 34);
@@ -386,23 +389,25 @@ namespace StockPerpTicker
         private readonly Label _priceLabel;
         private readonly Label _changeLabel;
         private readonly SparklineControl _sparkline;
+        private readonly Label _ratingLabel;
 
         internal TickerPage()
         {
             BackColor = TickerBackground;
-            _symbolLabel = new Label
+            _symbolLabel = new TickerSymbolLabel
             {
                 Location = new Point(4, 0),
-                Size = new Size(50, 32),
+                Size = new Size(50, ContentHeight),
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = TextColor,
                 TextAlign = ContentAlignment.MiddleLeft,
+                UseMnemonic = false,
                 Text = "--"
             };
             _priceLabel = new Label
             {
                 Location = new Point(54, 0),
-                Size = new Size(60, 32),
+                Size = new Size(60, ContentHeight),
                 Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = TextColor,
                 TextAlign = ContentAlignment.MiddleRight,
@@ -411,7 +416,7 @@ namespace StockPerpTicker
             _changeLabel = new Label
             {
                 Location = new Point(116, 0),
-                Size = new Size(60, 32),
+                Size = new Size(60, ContentHeight),
                 Font = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point),
                 ForeColor = TextColor,
                 TextAlign = ContentAlignment.MiddleCenter,
@@ -422,10 +427,20 @@ namespace StockPerpTicker
                 Location = new Point(178, 3),
                 Size = new Size(86, 26)
             };
+            _ratingLabel = new SentimentRatingLabel
+            {
+                Location = new Point(178, 0),
+                Size = new Size(86, ContentHeight),
+                Font = new Font("Segoe UI", RatingFontSize, FontStyle.Bold, GraphicsUnit.Point),
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = TextColor,
+                Visible = false
+            };
             Controls.Add(_symbolLabel);
             Controls.Add(_priceLabel);
             Controls.Add(_changeLabel);
             Controls.Add(_sparkline);
+            Controls.Add(_ratingLabel);
             Resize += delegate { UpdateRoundedRegion(); };
             UpdateRoundedRegion();
         }
@@ -436,9 +451,25 @@ namespace StockPerpTicker
             string instrumentId,
             MarketSnapshot snapshot,
             IList<Candle> candles,
-            decimal tickSize)
+            decimal tickSize,
+            bool isStale = false)
         {
             InstrumentId = instrumentId;
+            bool isFearGreed = string.Equals(instrumentId, FearGreedInstrument.Id, StringComparison.Ordinal);
+            _sparkline.Visible = !isFearGreed;
+            _ratingLabel.Visible = isFearGreed;
+            string ratingText = !isFearGreed ? string.Empty : snapshot == null ? "暂不可用"
+                : FearGreedInstrument.GetEnglishRating(snapshot.LastPrice);
+            if (isFearGreed && !string.Equals(_ratingLabel.Text, ratingText, StringComparison.Ordinal))
+            {
+                Logger.Info("迷你行情 CNN 等级更新：" + ratingText.Replace(Environment.NewLine, " ")
+                    + " / 指数 " + (snapshot == null ? "--" : snapshot.LastPrice.ToString("0.##"))
+                    + " / 数据陈旧 " + isStale);
+            }
+
+            _ratingLabel.Text = ratingText;
+            _ratingLabel.ForeColor = !isFearGreed || snapshot == null
+                ? TextColor : FearGreedInstrument.GetColor(snapshot.LastPrice);
             _symbolLabel.Text = GetCompactSymbol(instrumentId);
             if (snapshot == null)
             {
@@ -449,16 +480,23 @@ namespace StockPerpTicker
                 return;
             }
 
-            decimal change = snapshot.ChangePercent;
+            decimal change = isFearGreed ? snapshot.LastPrice - snapshot.Open24Hours : snapshot.ChangePercent;
             Color trendColor = change >= decimal.Zero ? UpColor : DownColor;
             _priceLabel.Text = FormatHelper.Price(snapshot.LastPrice, tickSize);
-            _changeLabel.Text = (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00") + "%";
-            _changeLabel.ForeColor = trendColor;
+            _changeLabel.Text = isFearGreed && isStale ? "陈旧"
+                : (change >= decimal.Zero ? "+" : string.Empty) + change.ToString("0.00")
+                    + (isFearGreed ? string.Empty : "%");
+            _changeLabel.ForeColor = isFearGreed && isStale ? DownColor : trendColor;
             _sparkline.SetData(candles, trendColor);
         }
 
         private static string GetCompactSymbol(string instrumentId)
         {
+            if (string.Equals(instrumentId, FearGreedInstrument.Id, StringComparison.Ordinal))
+            {
+                return "F&G Idx";
+            }
+
             if (string.IsNullOrEmpty(instrumentId))
             {
                 return "--";
@@ -479,6 +517,118 @@ namespace StockPerpTicker
                     oldRegion.Dispose();
                 }
             }
+        }
+
+    }
+
+    /// <summary>Renders every ticker symbol as one line without extra text padding.</summary>
+    /// <remarks>Author: Codex; date: 2026-11-17.</remarks>
+    internal sealed class TickerSymbolLabel : Label
+    {
+        /// <summary>Draws the symbol using the shared font, alignment and color.</summary>
+        /// <param name="args">The drawing surface and invalidated bounds.</param>
+        /// <returns>No value.</returns>
+        protected override void OnPaint(PaintEventArgs args)
+        {
+            TextRenderer.DrawText(args.Graphics, Text, Font, ClientRectangle, ForeColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
+                    | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
+        }
+    }
+
+    /// <summary>Emphasizes the sentiment word while fitting the complete category in a compact row.</summary>
+    /// <remarks>Author: Codex; date: 2026-11-17.</remarks>
+    internal sealed class SentimentRatingLabel : Label
+    {
+        private const string ExtremePrefix = "Extreme ";
+        private const string ExtremeQualifier = "Extreme";
+        private const int WordGap = 2;
+        private const float PointsPerInch = 72f;
+        private const float StandardDpi = 96f;
+        private readonly Font _qualifierFont = new Font("Segoe UI", 8f, FontStyle.Bold, GraphicsUnit.Point);
+
+        /// <summary>Fits the full category using the actual glyph bounds and the original font sizes.</summary>
+        /// <param name="args">The drawing surface and invalidated bounds.</param>
+        /// <returns>No value.</returns>
+        protected override void OnPaint(PaintEventArgs args)
+        {
+            if (string.IsNullOrEmpty(Text))
+            {
+                return;
+            }
+
+            bool isExtreme = Text.StartsWith(ExtremePrefix, StringComparison.Ordinal);
+            if (!isExtreme)
+            {
+                TextRenderer.DrawText(args.Graphics, Text, Font, ClientRectangle, ForeColor,
+                    TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding
+                        | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter
+                        | TextFormatFlags.PreserveGraphicsClipping);
+                return;
+            }
+
+            string categoryWord = Text.Substring(ExtremePrefix.Length);
+            using (GraphicsPath category = CreateTextPath(args.Graphics, categoryWord, Font))
+            using (GraphicsPath qualifier = CreateTextPath(args.Graphics, ExtremeQualifier, _qualifierFont))
+            using (Brush brush = new SolidBrush(ForeColor))
+            {
+                RectangleF categoryBounds = category.GetBounds();
+                RectangleF qualifierBounds = qualifier.GetBounds();
+                GraphicsState state = args.Graphics.Save();
+                try
+                {
+                    args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                    float gap = WordGap * args.Graphics.DpiY / StandardDpi;
+                    float top = Math.Max(0f,
+                        (ClientSize.Height - qualifierBounds.Height - gap - categoryBounds.Height) / 2f);
+                    PlaceTextPath(qualifier, qualifierBounds, top);
+                    PlaceTextPath(category, categoryBounds, top + qualifierBounds.Height + gap);
+                    args.Graphics.FillPath(brush, qualifier);
+                    args.Graphics.FillPath(brush, category);
+                }
+                finally
+                {
+                    args.Graphics.Restore(state);
+                }
+            }
+        }
+
+        /// <summary>Creates font-sized glyph outlines without adding line-height whitespace.</summary>
+        /// <param name="graphics">The drawing surface whose DPI determines the font size.</param>
+        /// <param name="text">The text to outline.</param>
+        /// <param name="font">The original font, without shrinking or stretching.</param>
+        /// <returns>The glyph path, owned by the caller.</returns>
+        private static GraphicsPath CreateTextPath(Graphics graphics, string text, Font font)
+        {
+            GraphicsPath path = new GraphicsPath();
+            path.AddString(text, font.FontFamily, (int)font.Style,
+                font.SizeInPoints * graphics.DpiY / PointsPerInch,
+                PointF.Empty, StringFormat.GenericTypographic);
+            return path;
+        }
+
+        /// <summary>Centers the glyph ink horizontally and positions its top edge.</summary>
+        /// <param name="path">The original font-sized glyph path.</param>
+        /// <param name="bounds">The path's actual ink bounds before placement.</param>
+        /// <param name="top">The desired top edge in control coordinates.</param>
+        /// <returns>No value.</returns>
+        private void PlaceTextPath(GraphicsPath path, RectangleF bounds, float top)
+        {
+            using (Matrix placement = new Matrix())
+            {
+                placement.Translate((ClientSize.Width - bounds.Width) / 2f - bounds.Left, top - bounds.Top);
+                path.Transform(placement);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _qualifierFont.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 
